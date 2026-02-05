@@ -1,0 +1,111 @@
+\subsubsection{Instruction Bundling Constraints}
+
+\paragraph{Rule 1}
+Two data dependent instructions may not be scheduled within a single bundle.
+
+\paragraph{Rule 2}
+Two instructions of the same bundle must not target the same architectural
+resource, otherwise the update value of this resource is unpredictable.
+
+\paragraph{Rule 3}
+(Specialization of Rule 2) An {ALU} instruction that produces a carry
+must not be bundled with a \texttt{SET} or \texttt{WFXL} instruction on CS.
+
+\paragraph{Rule 4}
+(Specialization of Rule 2) An {ALU} or {MAU} instruction that produces an IEEE~754
+floating point flag must not be bundled with a \texttt{SET} or \texttt{WFX*} instruction on
+CS.
+
+\paragraph{Rule 5}
+If a \texttt{GET}, \texttt{IGET} or \texttt{WAITIT} instruction is issued within a bundle, then the BCU and the tiny
+ALU unit inside the MAU are used.  As a consequence: \begin{itemize}
+\item No {MAU} instruction is allowed in this bundle
+\item Only 2 tiny {ALU} instructions may be used in this bundle (one on each ALU).
+\end{itemize}
+This rule is implicit and covered by the instruction reservation tables.
+
+% FIXME Bostan legacy, should be reviewed
+\subsubsection{Instruction Scheduling Constraints}
+
+\paragraph{Rule 6 -- Mandatory}
+PC must not be the target of a \texttt{hfx*} or a \texttt{set} instruction, else
+a TRAP.OPCODE is generated.  A simple branch may be used to modify the PC if
+needed.
+
+\paragraph{Rule 7 -- Mandatory}
+The following instructions may only be issued alone in the bundle: \begin{itemize}
+\item \texttt{RFE}
+\item \texttt{SCALL}
+\item \texttt{AWAIT}
+\item \texttt{SLEEP}
+\item \texttt{STOP}
+\item \texttt{BARRIER}
+\item \texttt{LOOPDO}
+\item \texttt{TLBREAD}
+\item \texttt{TLBWRITE}
+\item \texttt{TLBIINVAL}
+\item \texttt{TLBDINVAL}
+\item \texttt{TLBPROBE}
+\item \texttt{SET/WFXL} on PS/MMC/*OW
+\end{itemize}
+
+\paragraph{Rule 8 -- Mandatory}
+LS, LE and LC must not be modified within the hardware loop.
+
+\paragraph{Rule 9 -- Mandatory}
+The instructions that enable or disable hardware loops must not be used inside
+the corresponding loop.
+
+\paragraph{Rule 10 -- Mandatory}
+To avoid any semantic ambiguity and simplify the design of the hardware, branching instructions, including those triggering implicit refetches,
+are not allowed at a hardware loop last bundle (generates OPCODE traps). Those are: \begin{itemize}
+\item \texttt{CALL}
+\item \texttt{ICALL}
+\item \texttt{CB}
+\item \texttt{GOTO}
+\item \texttt{IGOTO}
+\item \texttt{RET}
+\item \texttt{RFE}
+\item \texttt{SCALL}
+\item \texttt{BARRIER}
+\item \texttt{LOOPDO}
+\item \texttt{TLBREAD}
+\item \texttt{TLBWRITE}
+\item \texttt{TLBIINVAL}
+\item \texttt{TLBDINVAL}
+\item \texttt{TLBPROBE}
+\item \texttt{SET/WFXL} on PS
+\end{itemize}
+
+\paragraph{Rule 11 -- Mandatory}
+In order to ensure a correct behavior while executing an hardware loop, a
+re-fetch must be generated after a set instruction involving LS, LE or LC
+registers. This re-fetch can be done through a \texttt{BARRIER} instruction, but also
+through the RFE or RET instructions.
+
+\paragraph{Rule 12 -- Mandatory}
+Similarly, a refetch has to be generated after an \texttt{IINVAL*} instruction. This
+re-fetch can be done through a \texttt{BARRIER} instruction, but also through the \texttt{RFE} or
+RET instructions.
+
+\paragraph{Rule 13 -- Mandatory}
+After changing the value of the rounding mode (RM) field of CS, a \texttt{BARRIER}
+instruction must be issued before any MAU/FPU instruction, to guarantee that
+these instructions will see the new value of RM.
+
+\paragraph{Rule 14 -- Mandatory}
+Similarly, after changing the value of PMC, a \texttt{BARRIER} is needed before a \texttt{GET}
+instruction on the concerned registers among PM0, PM1, PM2 and PM3, to make sure
+that the correct value will be read.
+
+\paragraph{Rule 15 -- Performance}
+For hardware simplicity, there are no bypasses on system function registers.  Then, in case
+of RAW dependency, the core will stall until the write
+completion. However, two specific cases are optimized:
+\begin{itemize}
+\item A \texttt{RET} instruction after a RA update will be executed seeing immediately the
+  new RA value, without stalls.
+\item An instruction which involves the carry flag after a CS update
+  will be executed seeing immediately the new carry value, without stalls.
+\end{itemize}
+

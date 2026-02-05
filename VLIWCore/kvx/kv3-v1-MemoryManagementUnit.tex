@@ -1,0 +1,519 @@
+\section{Memory Management Unit} \label{sec:memory-management-unit}
+
+\subsection{MMU Overview}
+
+\subsubsection{MMU Main Features}
+
+The \KalrayK core Memory Management Unit (MMU) is enabled by setting the
+MME bit of the Processing Status (PS) register. The \KalrayK core MMU assumes
+a unified address space for instructions and data. It supports three primary
+functions: \begin{itemize}
+
+\item Perform address translation from 32-bit (41-bit in 64 bit addressing mode) virtual addresses, optionally
+associated to a 9-bit Address Space Number (ASN), to 40-bit physical addresses.
+
+\item Ensure memory protection between processes, by associating protection
+attributes with each virtual memory page.
+
+\item Enforce memory caching policies for each virtual memory page.
+
+\end{itemize}
+The overall virtual to physical address translation flow is depicted in
+Figure~\ref{fig:MMU_PTW}. \medskip
+
+\begin{figure}
+  \centering
+    \includegraphics{MMU_PTW}
+  \caption{MMU address translation flow.}
+  \label{fig:MMU_PTW}
+\end{figure}
+
+Operating systems rely on a page table data structure to translate the virtual
+addresses of a process to physical addresses. The \KalrayK core includes
+Translation Lookaside Buffers (TLBs) to cache the most recent translations. The
+\KalrayK core MMU is designed for software page table walk and TLB contents
+maintenance. The \KalrayK core MMU supports 4 page sizes, namely 4KB, 64KB, 2MB
+and 512 MB. For each TLB entry, the (virtual and physical) addresses must be
+aligned on the page size (least significant bits of PN and FN will be considered
+as zero by hardware).
+
+%The classic page table data structure is organized as a tree with
+%page table directories (PTDs) as the inner nodes, and page table entries (PTEs)
+%as leaf nodes.
+%
+%The \KalrayK core is designed for straightforward use by
+%Linux in 32-bit core 4-bit physical address extension (PAE) to 36
+%bits. This mode implies a 3-level page table where PTDs and PTEs are 32-bit
+%structures, which are converted to pointers by clearing the two LSBs of PTDs.
+
+\subsubsection{Memory Management Control (MMC) Register} \label{sec:mmc-description}
+
+\input{Register-MMC}
+
+The MMC register is a 32-bit system register that configures the MMU:
+\begin{description}
+
+\item[E] Error flag
+
+Set by TLB maintenance instructions under certain conditions (see Section~\ref{sec:tlb-maintenance}).
+
+\item[PAR] PARity error flag
+
+Set by TLB maintenance instructions under certain conditions (see Section~\ref{sec:tlb-maintenance}).
+
+\item[SB] Select Buffer
+
+Buffer (0 for JTLB, 1 for LTLB) of the entry operated on by the TLB maintenance instructions.
+
+\item[SS] Select Set
+
+Set number of the entry operated on by the TLB maintenance instructions (0 to 63 for the JTLB, 0 for the LTLB).
+
+\item[SW] Select Way
+
+Way number of the entry operated on by the TLB maintenance instructions (0 to 3 for the JTLB, 0 to 15 for the LTLB).
+
+\item[PTC] Protection Trap Cause
+
+This field is updated by the HW when a PROTECTION trap is taken and details the scenario that produced the trap, i.e. it precises the nature of the memory access that triggered the PROTECTION trap.
+Its value is interpreted as follows:
+
+{\small
+\begin{tabular}{|l|l|l|l|l|} \hline
+\bf PTC Value & 0 & 1 & 2 & 3 \\ \hline
+\bf Trapping access nature  & reserved & read & write & execute \\
+\hline \end{tabular}
+}
+
+where ``execute'' corresponds to an instruction fetch access, ``read'' to a data read instruction (loads, DINVALL, DTOUCHL), and ``write'' to a data write access (stores, DZEROL and atomic instructions).
+
+\item[SPE] Speculative PROTECTION trap Enable
+
+Enable speculative memory instructions to trigger the PROTECTION trap.
+
+\item[SNE] Speculative NOMAPPING trap Enable
+
+Enable speculative memory instructions to trigger the NOMAPPING trap.
+
+\item[S] Speculative trap
+
+Automatically updated by hardware on PROTECTION and NOMAPPING traps: set to 1 if the trap was caused by a speculative memory instruction (non-trapping load or DTOUCHL), 0 otherwise.
+
+\item[ASN] Address Space Number
+
+Contains the Address Space Number of the current process running on the \KalrayK core. Non global TLB entries (i.e. entries with bit G = 0) must have their ASN field matching MMC.ASN for a (data or instruction)
+core memory access to match them (in addition to the virtual address matching the PN field of the entry).
+
+\end{description}
+
+
+\subsubsection{TLB Entry Low (TEL) and High (TEH) Registers}
+
+The TEL and TEH registers are 64-bit system registers whose formats correspond
+respectively to the High part [80:40] and the Low part [39:0] of the TLB Format
+(TLBF) specified in Section~\ref{sec:tlb-description}.
+The high parts of TEL and TEH (respectively bits [63:40] and [63:41]) are reserved: writing to them has no effect, they are always read as 0 and have no effect on maintenance instructions.
+TLBF represents the format of the TEL:TEH register pair (concatenated without the reserved high parts).
+These registers are used to: \begin{itemize}
+
+\item Prepare an entry for writing into the architectural TLBs with the TLBWRITE
+instruction.
+
+\item Return an entry read from the architectural TLBs with the TLBREAD or TLBPROBE instructions.
+
+\item Supply the virtual address and ASN to the TLBPROBE instruction.
+  
+\item Return the slot ($\{buffer, set, way\}$ triplet) in which a TLB entry hit by a TLBPROBE instruction resides.
+
+
+\end{itemize}
+
+\subsubsection{MMU Trap Causes}
+
+The traps that can be raised by the MMU correspond to the following PS.EC values: \begin{description}
+
+\item[PSYSERROR] The mmu is off (PS.MME = 0) and the (fetched) virtual address is out of the physical address range (0 to 1TB -1) so it cannot be flat-mapped
+
+\item[DSYSERROR] The mmu is off (PS.MME = 0) and the (data) virtual address is out of the physical address range (0 to 1TB -1) so it cannot be flat-mapped
+
+\item[TPAR] Parity error encountered while performing a lookup in JTLB. This trap will not be raised if a matching entry is found in the LTLB.
+
+\item[NOMAPPING] No valid architectural TLB entry matches the virtual address (TLB miss).
+
+\item[PROTECTION] A valid architectural TLB entry matches the virtual address,
+however the protection attributes do not allow the memory access.
+
+\item[WRITETOCLEAN] A valid architectural TLB entry matches the virtual address,
+the protection attributes authorize the memory store/DZEROL/atomic instruction execution, however the entry ES value is ``Present'' (CP = 01).
+
+\item[ATOMICTOCLEAN] A valid architectural TLB entry matches the virtual address,
+the protection attributes authorize the memory atomic instruction execution (alwc, aldc, acws, acds, afwa or afda),
+however the entry ES value is ``Modified'' (CP = 10).
+
+\item[DMISALIGN] Data misaligned access to a device area (CP = 00) or data misaligned access spanning over two pages with different cache policies 
+
+
+\end{description}
+The MMU traps are prioritized according to the above order with PSYSERROR first.
+
+For all MMU traps, the virtual address is available in the EA register. In case
+an unaligned bundle, or data access, spans over two pages, EA contains: \begin{itemize}
+\item the (virtual) address of the beginning of the bundle (respectively the data access effective address)
+if the lower page traps,
+\item the (virtual) address of the higher page otherwise.
+\end{itemize}
+In case a misaligned bundle, or data access, spans over two pages and the two pages are trapping, the page holding the lower virtual address
+imposes its trap.
+
+\subsection{Translation Lookaside Buffers (TLBs)} \label{sec:tlb-description}
+
+\subsubsection{Architectural and Micro TLBs} \label{sec:fine-tlb-description}
+
+The \KalrayK core architectural resources include a fully associative
+locked TLB (LTLB) with 16 entries, and a 4-way set-associative joined TLB (JTLB)
+with 256 entries (64 entries per way). The union of the LTLB and the JTLB is referred to as the
+architectural TLBs (see Figure~\ref{fig:TLB}). Each TLB entry contains 81 bits, respecting the format detailed below.
+
+In order to improve the energy efficiency and the performance of the core, two fully
+associative caches of the architectural TLBs of 4 entries each are implemented, one
+for data accesses ($\mu$DTLB) and the other for instructions fetches
+($\mu$ITLB). Indeed, the entries are then closer to the translation process.
+These micro-architectural TLBs (referred to as micro-TLBs) are managed by hardware and are transparent to
+software. They are automatically invalidated whenever any LTLB or JTLB entry is changed.
+When a data or instruction memory access is requested by the core, the $\mu$DTLB and the $\mu$ITLB are respectively
+looked up. If no matching entry is found (micro-TLB miss), the architectural TLBs are sought.
+
+TLB entries should be installed by software in the architectural TLBs using TLBWRITE instructions.
+When writing TLB entries into the architectural TLBs, the software only controls:  
+\begin{itemize}
+\item in which TLB (LTLB or JTLB) the entry is written, via MMC.SB (Select Buffer)
+\item in which way of a particular TLB the entry is written, via MMC.SW (Select Way)
+\end{itemize}
+MMC.SS (Select Set) is used only by TLBREAD and is ignored by TLBWRITE.
+As a consequence, the hardware will always decide unilaterally in which set of the target TLB an entry goes.
+This will be set 0 for the LTLB as it is the only one available, and set $<i>$ in JTLB, where $<i>$ corresponds 
+to the ``index'' of the virtual page of the entry.
+For a page of size $2^{n}$ (with $n \ge 12$), this index is determined by the value of the bit slice comprising bits n to n+5 of the virtual address corresponding to the start of the page
+(that corresponds in turn to the bits n-12 to n-12+5 of the entry's TLBF.PN field).
+For example, a 4KB page that has to be installed in the JTLB will be written to set number p, where p is the value of the 6 lower significant bits of the entry's TLBF.PN field (bits 12 to 17 of the virtual address corresponding to the start of the page). As a result, a 4KB page starting at address 0x00001000 will be written to the set number 1 in the JTLB (the way number (0 to 3) being specified by software through MMC.SW).
+A 64KB page that has to be installed in the JTLB will be written to architectural set number p, where p is the value of the bits 16 to 21 of the entry's TLBF.PN field. As a result, a 64KB page starting at address 0x001e0000 will be written to the set number 30 in the JTLB.
+
+When a TLBWRITE is successful, the hardware updates MMC.SS with the number of
+the set in which it installed the TLB entry.
+
+This organization constraint is in relation with the way the JTLB is implemented
+in hardware: it is really a 4-ways set associative cache (refilled by software),
+meaning that the hardware will look up virtual addresses at precise indexes (set
+number) only. This in turn allows a fast lookup of the JTLB, typically spending
+one cycle by page size enabled in PS.PMJ.
+
+The \KalrayK core does not support virtual pages overlapping or multimapping: in
+case several entries are written to the architectural TLBs that could match the
+same memory access, the behaviour is undefined. 
+
+
+\begin{figure}
+  \centerline{\includegraphics{TLB}}
+  \caption{Architectural and microTLBs organization.}
+  \label{fig:TLB}
+\end{figure}
+
+\subsubsection{TLB Format (TLBF)}
+
+\input{Register-TEH}
+\input{Register-TEL}
+
+The \KalrayK core defines the format of the 81 bits of a TLB entry as:
+\begin{description}
+
+\item[PN] Page Number
+
+These bits are matched against the virtual address bits [40:$n$], where $n$ is
+such as $2^n$ equals the page size. PN need to be always aligned on page size. For page sizes greater than 4KB, bits
+[$n-12-1$:0] of PN must be 0. The nine highest bits of PN (corresponding to
+bits [40:32] of TEH) must always match the virtual address bits [40:32], even
+when the core executes in 32 bit addressing mode.  This implies that they should be written as
+0 if willing to map pages for 32 bit addressing mode.
+
+
+\item[VS] Virtual Space
+
+One virtual space per privilege level. Virtual space is used by hardware during
+lookup of the MMU TLB entries for normal fetch and data virtual accesses.
+
+\item[G] Global page indicator
+
+When G = 1, the page is global, meaning that its ASN need not match MMC.ASN for a virtual address to hit in the page
+
+\item[ASN] Address Space Number
+
+Address Space Number of the page: must match MMC.ASN for an access to hit in the page (unless G = 1).
+
+
+\item[FN] Frame Number
+
+FN contains the physical address that will be substituted to the page
+address when a virtual address translation occurs. Only bits [39:$n$], where
+$n$ is such as $2^n$ equals the page size, will be substituted. The bottom bits
+of the virtual address (bits [$n-1$:0]) will remain unchanged and constitute the
+offset inside the page. For page sizes greater than 4KB, bits [$n-12-1$:0] of FN
+are always ignored (considered as 0) by hardware. This corresponds to the
+fact that virtual pages (and their associated physical frames) are always
+aligned on the page size.
+
+\item[PS] Page Size
+
+This field sets the page size among the four available, with the following encoding:
+
+{\small
+\begin{tabular}{|l|l|l|l|l|} \hline
+\bf PS Value & 0 & 1 & 2 & 3 \\ \hline
+\bf Page Size & 4KB & 64KB & 2MB & 512MB \\
+\hline \end{tabular}
+}
+
+\item[PA] Protection Attributes
+
+The sixteen values encoded in PA are interpreted as different access protections
+depending on the PS.MMUP Privilege Mode bit:
+
+{\small
+\begin{tabular}{|l|l|l|l|l|l|l|l|l|} \hline
+\bf PA Value & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7 \\
+\hline
+\bf PS.MMUP = 0 & NA & NA & NA & NA & NA & R & R & R \\
+\hline
+\bf PS.MMUP = 1 & NA & R & RW & RX & RWX & R & RW & RX \\
+\hline \hline
+\bf PA Value & 8 & 9 & 10 & 11 & 12 & 13 & 14 & 15 \\
+\hline
+\bf PS.MMUP = 0 & R & RW & RW & RX & RX & RWX & & \\
+\hline
+\bf PS.MMUP = 1 & RWX & RW & RWX & RX & RWX & RWX & & \\
+\hline \end{tabular}
+}
+
+Access protections include No Access (NA), Read Only (RO), Read Write
+(RW), Read Execute (RX), Read Write execute (RWX).
+
+\item[CP] Cache Policy
+
+The four values encoded in CP are interpreted as follows:
+
+{\small
+\begin{tabular}{|l|l|l|l|l|} \hline
+\bf CP Value & 0 & 1 & 2 & 3 \\ \hline
+\bf Data & Device & Uncached & Write Through & Uncached \\
+\hline
+\bf Instruction & Uncached & Uncached & Cache Enable & Cache Enable \\
+\hline \end{tabular}
+}
+
+The Uncached policy connects loads, stores and fetch accesses directly to the
+memory system, without side-effects on the caches.
+
+The Device policy prevents the speculative memory instructions (non-trapping
+load or DTOUCHL) from accessing memory. Non-trapping loads happening in Device pages always return
+zero to the core. In addition, the Device policy implies that all accesses must
+be aligned. In case of misaligned memory access with Device policy, a DMISALIGN trap is generated.
+An access spanning over two pages with different CP also generate a DMISALIGN trap.
+
+
+\item[ES] Entry Status
+
+The four values encoded in ES are
+interpreted as follows:
+
+{\small
+\begin{tabular}{|l|l|l|l|l|} \hline
+\bf ES Value & 0 & 1 & 2 & 3 \\ \hline
+\bf & Invalid & Present & Modified & A-Modified\\
+\hline \end{tabular}
+}
+
+A zero ES value disables the entry. 
+Setting ES value to ``Modified'' prevents the WRITETOCLEAN trap from happening when a store/DZEROl/atomic instruction writes data to this page (but atomic instructions hitting such pages will take the ATOMICTOCLEAN trap).
+Setting ES value to ``A-Modified'' prevents the WRITETOCLEAN trap from happening when a store/DZEROl instruction writes data to this page, 
+and also prevents the ATOMICTOCLEAN trap from happening when an atomic instruction accesses this page (as a result no *TOCLEAN traps can be taken on such a page).
+
+When TLB entries are stored in memory as part of a page table, the ES value zero
+(Invalid) frees the 30 upper bits of the corresponding TLB entry. These bits can be
+used by system software to encode a page offset in a swap file. A non-zero ES value
+indicates the translation is valid.
+\end{description}
+
+
+
+
+\subsubsection{Configuration of supported Page Sizes}
+
+All page sizes can be installed and used at any time in the LTLB.
+On the other hand, PS.PMJ (Page size Mask in JTLB) constrains the page sizes that can be used currently in the JTLB, as described in section ~\ref{sec:mmc-description}.
+All page sizes can be installed in the JTLB even a page whose size is not enabled in PS.PMJ (SPS.PMJ if PS.DAUS is set).
+Disabling page sizes in PS.PMJ without first invalidating all valid entries of the corresponding sizes in the JTLB is forbidden and may lead to undefined behaviour.
+
+\paragraph{Note} The reset value of the LTLB entries is all 0 (so, in particular, TLBF.ES = 0, meaning the page is not valid).
+The reset value of the JTLB entries is architecturally undefined. As a consequence, all JTLB entries should always be written by software (using the TLBWRITE maintenance instruction) before the MMU is enabled for the first time.
+
+\subsection{TLB Maintenance Instructions} \label{sec:tlb-maintenance}
+
+\subsubsection{Writing to Architectural TLB Entries}
+
+The TLBWRITE instruction reads the TEL:TEH register pair as well as the MMC.SB and MMC.SW fields and copies TEL:TEH in the TLB entry slot of the selected buffer (JTLB if MMC.SB = 0, LTLB if MMC.SB = 1), at the correct set determined by hardware, in the way selected by MMC.SW, as explained in section ~\ref{sec:fine-tlb-description}.
+Error conditions of the TLBWRITE instruction are: \begin{itemize}
+
+\item A MMC.SW value out of the architectural TLB ranges (i.e.: $\ge 4$ with MMC.SB = 0)
+
+\item TEH.PN or TEL.FN values that are not aligned on TEL.PS
+
+\end{itemize} On error, the MMC.E bit is set, MMC.SS is not updated and the write to the architectural TLB is not done. If the TLBWRITE is successful, MMC.E is cleared and MMC.SS is updated with the set number in which the hardware wrote the TLB entry.
+
+\subsubsection{Reading from Architectural TLB Entries}
+
+The TLBREAD instruction reads the MMC.SB, MMC.SS and MMC.SW fields. The architectural TLB entry corresponding to this triplet is  
+copied into the TEL:TEH register pair. For hardware optimization reasons, following a successful TLBREAD, only bits [40-12:$n$-12] of the TEH.PN field 
+(corresponding to bits [40:$n$] of TEH) are guaranteed to be correct (i.e. reflect those of the entry read), with $n$ such as $2^n$ equals the page size
+ of the entry read. Bits [$n$-12-1: 0] of TEH.PN are undefined and should not be interpreted / relied upon. So, for example, for a 64KB page, 
+bits [3:0] of PN (corresponding to bits [15:12] of TEH) are undefined. These bits are not significant (as their weight is inferior 
+to the entry's page size) and never used by hardware during the memory access matching process.
+
+In case  \begin{itemize}
+
+\item the triplet does not point to an existing TLB entry (e.g.: $\{SB, SS, SW\}$ = $\{1, 53, 4\}$ = $\{LTLB, set 53, way 4\}$)
+\item or the TLBREAD reads a JTLB entry and a parity error is detected somewhere in the corresponding set
+
+\end{itemize}
+
+then the MMC.E bit is set and the read is not performed (TEL:TEH are not updated). MMC.PAR is cleared in the first case (TLBREAD to a non existing entry) and set in the second one (parity error in JTLB).
+
+If the TLBREAD is successful (that is none of the above error conditions happens), then MMC.E and MMC.PAR are cleared and TEL:TEH are updated with the value of the TLB entry read.
+
+\subsubsection{Probing Architectural TLB Entries}
+
+The TLBPROBE instruction reads the TEH.PN and MMC.ASN fields, as well as PS.VS (SPS.VS if PS.DAUS is set) and searches
+for a matching entry in the architectural TLBs. On success, the $\{SB, SS, SW\}$ triplet of the matching entry
+is written to the MMC.SB, MMC.SS and MMC.SW fields, the matched entry is copied into TEL and TEH, and MMC.E and MMC.PAR are cleared.
+
+A matching entry in the architectural TLBs must be valid, must have the same VS and PN
+field values, and the same ASN value (unless it is global).
+
+Error cases for a TLBPROBE instruction are: \begin{itemize}
+
+\item A parity error is encountered in JTLB during the lookup and no LTLB entry matches. In this case MMC.SB, MMC.SS and MMC.SW fields are not updated (nor TEL and TEH) and the MMC.E and MMC.PAR bits are set.
+\item no matching entry is found in the architectural TLBs (and no parity error is detected). In this case, MMC.SB, MMC.SS and MMC.SW fields are not updated (nor TEL and TEH) , MMC.E is set and MMC.PAR is cleared.
+
+\end{itemize}
+
+
+\subsection{Special Memory Accesses}
+
+\subsubsection{Speculative Memory Instructions}
+
+Speculative memory instructions (such as non trapping loads and DTOUCHL) can not trigger DSYSERROR nor DMISALIGN traps. In case one of them is performed at a virtual address where a regular load would have triggered such traps, it is cancelled (not sent to the memory system) and silently brings back 0x0 to the register file.
+
+Speculative memory instructions are subject to the TPAR trap like any other access.
+
+Speculative memory instructions can not trigger the WRITETOCLEAN trap nor the ATOMICTOCLEAN trap, as only memory instructions that write data to memory can trigger these traps.
+
+Speculative memory instructions can trigger NOMAPPING and PROTECTION traps if the bits MMC.SNE and MMC.SPE are respectively set. If a speculative memory access is performed at a virtual addresses where a regular load would have triggered one of these traps, and the corresponding control bit of MMC is cleared, the access is cancelled (not sent to the memory system) and silently brings back 0x0 to the register file.
+
+
+\subsubsection{Unaligned Accesses}
+
+Unaligned memory accesses that overlap a boundary between two pages have the
+potential to trigger two MMU traps. When this condition occurs, the two traps
+are serialized: the first is triggered immediately, and the second is triggered
+when the memory access instruction is restarted (with the page corresponding to the first half newly mapped).
+
+As a consequence, on traps caused by the MMU on a (respectively) data access or instruction bundle spanning over two pages, the EA SFR (Exception Address) will be set to the effective address of the access (respectively bundle) if the first page is not mapped or generates trapping conditions, and to the address of the start of the upper page otherwise. For fetch-side MMU traps, SPC will always be set to the address of the start of the bundle.
+
+Because, when the MMU is on, the NOMAPPING trap has the highest priority (apart from the TPAR trap), the two potentially missing
+pages will be mapped first before any other MMU trap occurs on a misaligned access.
+
+When a data access spans over two pages that are valid but specify different cache policies, a DMISALIGN trap is generated (unless the access is speculative). In this case, EA is set to the address of the upper page (unless the bottom page uses a device cache policy, in which case, EA is set to the effective address of the access).
+
+\subsubsection{Global Cache maintenance instructions}
+Global data cache maintenance instructions (DINVAL) and global instruction cache maintenance instructions (IINVAL) bypass the MMU as they do not target particular addresses. Hence no translation is needed for them, and no right checks of any kind is made.
+
+\subsubsection{Line Cache maintenance instructions}
+The IINVALS instruction acts on indexes of the instruction cache (not real addresses) by invalidating lines whose indexes match the lowest bits of the virtual address provided. As a result, it does not need any translation and also bypasses the MMU.
+
+DTOUCHL and DINVALL are considered respectively as non trapping and regular load byte with respect to all the MMU behaviour (translation, permission checks, traps).
+
+DZEROL is considered as a write access (store byte) with respect to all the MMU behaviour (translation, permission checks, traps).
+
+\subsubsection{Atomic instructions}
+Atomic instructions (ALCLRW, ALCLRD, ALADDW, ALADDD, ACSWAPW, ACSWAPD) are considered as read/write accesses. As a result, they need both ``R'' and ``W'' rights in the PA field to execute without triggering a PROTECTION trap.
+
+\subsection{32-bits and 64-bits modes}
+
+The \KalrayK core supports two modes of execution: 32-bits and 64-bits mode.
+The behaviour of the MMU is exactly the same for the two execution modes except on one particular point: when a data access crosses the first 4GB boundary (e.g. a LD at address 0xFFFF\_FFFC), then:
+\begin{itemize}
+\item in 32 bit addressing mode, the MMU will consider that the second half of
+    the access happens at virtual address 0;
+\item in 64 bit addressing mode, the MMU will consider that the second half of
+    the access happens at virtual address 0x1\_0000\_0000.
+\end{itemize}
+
+\subsection{TLB Shootdown Procedure}
+
+In case of multiple cores sharing the page table data structures or
+physical page frames, the TLB entries inside those cores must be kept
+consistent. In particular, any change in a page table descriptor by one
+core must be propagated to the other cores. This propagation can be
+achieved by a so-called TLB shootdown procedure, where the TLB entries
+corresponding to a physical address are flushed in those cores.
+
+The \KalrayK core does not provides specific resources for helping a TLB
+shootdown procedure.
+
+\subsection{Default memory space mapping}
+When the MMU is disabled (PS.MME = 0), all the memory accesses from the core are flat-mapped, that is the MMU outputs a physical address identical to the virtual address it received.
+The memory space is globally considered as unprotected (as if PA = 13: {RWX, RWX}). All addresses are considered as in Device space (CP = 00, implying no misalignment is allowed) except five pre-defined regions that are treated as cached (CP = 2). These five regions are:
+\begin{itemize}
+\item The 0x00\_0000\_0000 to 0x00\_003F\_FFFF range (= 0  MB to 4 MB = "local SMEM")
+\item The 0x00\_0100\_0000 to 0x00\_013F\_FFFF range (= 16 MB to 20 MB = "cluster 0 SMEM")
+\item The 0x00\_0200\_0000 to 0x00\_023F\_FFFF range (= 32 MB to 36 MB = "cluster 1 SMEM")
+\item The 0x00\_0300\_0000 to 0x00\_033F\_FFFF range (= 48 MB to 52 MB = "cluster 2 SMEM")
+\item The 0x00\_0400\_0000 to 0x00\_043F\_FFFF range (= 64 MB to 68 MB = "cluster 3 SMEM")
+\item The 0x00\_0500\_0000 to 0x00\_053F\_FFFF range (= 80 MB to 84 MB = "cluster 4 SMEM")
+\item The 0x00\_00D2\_4000 to 0x00\_00D2\_7FFF range (= 16 kB wide, starting at OTP Boot Rom start address)
+\item The 0x00\_1800\_0000 to 0x00\_1FFF\_FFFF range (= 384 MB to 512 MB = "XIP Flash")
+\item The 0x00\_8000\_0000 to 0x00\_FFFF\_FFFF range (= 2GB to 4GB = "alias local DDR")
+\item The 0x01\_0000\_0000 to 0x10\_FFFF\_FFFF range (= 4GB to 68GB = "local DDR")
+\end{itemize}
+Furthermore, fetch or data accesses to virtual addresses above 0xFF\_FFFF\_FFFF (1TB - 1) will respectively trigger PSYSERROR and DSYSERROR traps (as there is no corresponding flat-mapped physical address in the current implementation of the physical memory map).
+
+\subsection{Virtual Spaces} \label{sec:virtual-spaces}
+
+In order to provide a clean separation between (e.g.) an hypervisor and a guest
+OS running on the same \KalrayK core, (configurable) separate virtual spaces
+(VS) are added to the architecture, one per PL.
+
+This requires that 2 bits (VS[1:0]), living in PS and SPS\_PL*, be used by
+hardware during the lookup of the MMU TLB entries for normal fetch and data
+virtual accesses. In a similar way as a process runs with a particular ASN, at a
+certain time, a Privilege Level PL$<i>$ always executes within a particular VS.
+During the TLB lookup, for a match to occur between the requested virtual
+address and a TLB entry, the VS of the access has to match that of the entry.
+
+Starting from the most privileged PL (PL0), each PL will be able to choose:
+its own VS and PS.MME bit value; and whether less privileged PLs can choose their VS
+and control their PS.MME bit or not by making use of the VS / MME ownership bits in
+PSO. 
+
+Inside a VS, the usual matching rules apply with respect to the ASN and G bits. The
+PS.MMUP bit controls if the current PL is considered privileged or not
+inside its VS with respect to the RWX attributes of the TLB entries.  The PS.V64
+bit controls if the current PL operates in 64 bit (V64 = 1) or 32 bit addressing
+mode.  When the PL changes (following the firing of an exception or the
+execution of a RFE), the current VS naturally changes to that of the target
+ring.
+
+In the case of an hypervisor running in PL0, an OS in PL1 and a User in PL2, an
+expected setup for Virtual Spaces would be to have one for PL0 (e.g. SPS\_PL0.VS
+= 0) and a different one common to PL1 and PL2 (e.g. SPS\_PL1.VS = SPS\_PL2.VS =
+1), with PL0 owning *PS*.VS in PSO.
+
+

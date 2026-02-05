@@ -1,0 +1,1830 @@
+\section{Core Architectural State}
+
+
+\subsection{General Purpose Registers}
+
+The \KalrayK core provides $64\times 64$-bit wide general purpose registers
+(GPRs) $R_i$ ($i = 0$ to 63) used for for all scalar and SIMD data types that
+fit in 64-bit. In particular, integers, addresses, Boolean conditions,
+single-precision and double-precision floating-point. GPRs are used for:
+\begin{itemize}
+
+\item The target of load instructions or the source of store instructions.
+
+\item The source or target of arithmetic, logic, shift, bit-manipulation
+instructions.
+
+\item The source or target of move to or from the system function registers
+(SFRs).
+
+\item The base address used for the effective address calculation of a
+load/store instruction.
+
+\item Used by addressing modes as index or condition registers.
+
+\end{itemize}
+Data types larger than 64 bits are held into adjacent pairs or quadruples of
+general purpose registers.
+
+The 64 GPRs are reset to 0x0 after RESET.
+
+\subsubsection{GPR Loads and Stores}
+
+Any GPR can be loaded with 64-bit data from memory. Data smaller than
+a 64-bit double-word (a byte, half-word or word) can also be loaded
+from the memory into any GPR. They are first zero- or sign-extended to
+64-bit as appropriate before being moved into the 64-bit target
+register.
+
+The 64-bit content of any GPR can be stored to memory. A datum smaller
+than 64 bits held in a GPR can also be stored to memory. In that
+case only the least significant bits of a GPR are written to memory.
+
+For loads and store instructions, there is no difference between 32/64-bit
+integer data, or 32/64-bit floating-point data. As a result, the instruction set
+does not distinguish between 32/64-bit integer data memory accesses, or
+32/64-bit floating-point data memory accesses.
+
+It is also possible to load 128-bit or 256-bit data into respectively a pair or
+a quadruple of GPR. Register pairs must start at an even register number, which
+receives the 64 MSBs. Likewise, register quadruples must start at register
+number multiple of 4, which receives the 64 MSBs.
+
+
+\subsubsection{GPRs as Address Registers}
+
+The effective addresses of load/store instructions are calculated according to the
+addressing mode specified by the instructions. All addressing modes specify at
+least one address register for the base address, and a second one in case of
+indexed addressing modes.  Consequently, any GPR can be used as: \begin{itemize}
+
+\item A base address of the addressing mode.
+
+\item An index register in case of indexed addressing modes.
+
+\end{itemize}
+
+\subsection{Execution Privilege Levels} \label{sec:plevels}
+
+The \KalrayK core architecture defines 4 privilege levels (PL) from 0 to 3, with
+decreasing execution privileges, PL0 being the most privileged.
+Each of these PLs owns its own set of banked SFRs and is entered either: \begin{itemize}
+    \item When taking an exception from a less privileged (higher numbered) PL
+        or from itself.
+    \item When returning from a higher privileged (lower numbered) PL or itself,
+        by executing RFE.
+\end{itemize}
+For example, PL1 can be entered when taking a trap/it/scall/dbg exception from PL3, PL2 or PL1.
+PL2 can be returned to by executing RFE from PL0, PL1 or PL2.
+
+After reset, the processor starts executing in PL0, which owns all the
+resources of the core, including RW rights on all (writable) SFRs, MMU
+manipulation rights, and all instructions execution rights. PL0 may then choose
+to delegate ownership of some resources to less privilege levels, that may
+themselves delegate them further below.
+
+A PL that owns a resource will always receive the exceptions raised by less
+privilege levels trying to access this resource. It will then take the
+appropriate action (for instance: end the offending process, or take some action
+on behalf of it) before (potentially) returning control to the trapping level.
+
+\subsection{System Function Registers} \label{sec:sfr}
+
+The System Function Registers (SFRs) are used for program and system control
+and as status registers. The SFRs are numbered from 0 to 192. Those listed in
+Table~\ref{table:SFR} are defined while the others are reserved for future use.
+
+\begin{table}
+\begin{center}
+\input{RegFile-SFR}
+\end{center}
+\caption{System Function Registers (SFR).}
+\label{table:SFR}
+\end{table}
+
+The SFRs are used for program/system control and as status registers. They can
+be used as: \begin{itemize}
+\item The source or target (implicit or explicit) of specific instructions.
+\item The source or target of a move to or from the GPRs.
+\end{itemize}
+The SFRs cannot be the target of load instructions or the source of store instructions.
+The value read from the reserved bits in the various SFRs is 0b0. Attempting to write
+to the reserved bits in the various SFRs has no effect. However, it may raise
+the hardware trap PRIVILEGE if the permissions are not sufficient.
+
+After RESET, all SFRs are initialized. SFRs are described in the following
+subsections.
+
+Privileged resources can only be accessed when the core is in privileged mode.
+When attempting to read privileged registers in the user mode, the result is 0.
+Attempts to write cause a PRIVILEGE or OPCODE trap, according to the following
+rules: in privileged mode the trap is always OPCODE. In the user mode it is
+PRIVILEGE if such access is allowed in the system mode, OPCODE if it is
+impossible also in privileged mode.
+
+
+\subsubsection{Program Counter (PC)}
+
+The Program Counter (PC) contains the address of the current instruction.
+As the bundles are at least four bytes wide, the least significant two bits of PC
+are always cleared. Write to this register is not allowed.
+
+The PC is the source for the calculations of the real addresses in all PC-relative
+branches, as well as the initialization of PC-relative loop start/end registers.
+PC is automatically copied into SPC when an exception (hardware trap, interrupt,
+system call) occurs.
+After RESET, the PC is initialized with a configurable address depending on
+input pins, but bits 0 to 11 have to be set to 0x000.
+
+
+\subsubsection{Processing Status (PS)}
+\label{processor:ps_register}
+
+\input{Register-PS}
+
+The Processing State (PS) register is composed of the following bit-fields:
+\begin{description}
+
+\item[PL] Privilege Level
+
+Current privilege level, forced to PL$<i>$ on exception.
+
+After RESET, the core is in privilege level 0.
+
+\item[ET] Exception Taken
+
+The ET bit is used to detect unrecoverable errors (double trap): no exception
+should be taken while this bit is set otherwise the execution is halted.
+
+The ET bit is set when an exception (SCALL, taken interrupt, trap) is taken. It
+can also be set by software. It is the software responsibility to clear it in
+exception handler prologue if exception nesting is required.
+
+After RESET, ET is set.
+
+\item[HTD] Hardware Trap Disable
+
+If HTD is set and ET is clear, traps other than parity and ECC errors do not
+branch to exception handler and do not modify PM, IE and ET. The EC field and
+the EA register are always updated. HTD is set by software or by the break
+instruction.
+
+{\footnotesize
+\begin{tabular}{|c|c|c|c|c|p{3cm}|p{6.5cm}|} \hline
+  \multicolumn{2}{|c|}{before} &   \multicolumn{2}{|c|}{after}  & Debug &
+\multirow{2}{*}{Exception type} &  \multirow{2}{*}{Comments} \\
+\cline{1-4}
+  ET  & HTD  & ET & HTD & enable &  &  \\
+\hline
+0 & 0 & 1 & 0 & $\dagger$ & any & \texttt{SPS $\leftarrow$ PS},
+\texttt{SPC $\leftarrow$ PC}, \texttt{PC $\leftarrow$ EV} \\
+\hline
+0 & 1 & 1 & 1 & $\dagger$ & SCALL/int/trap (ECC, Parity) & same as above \\
+\hline
+0 & 1 & 0 & 1 & $\dagger$ & trap(not ECC, not Parity) & \texttt{PS.EC
+$\leftarrow$ cause}, \texttt{EA $\leftarrow$ @address}, bundle canceled \\
+\hline
+1 & 0/1 & 1 & 1 & 1 & any & trap caught by debugger \\
+\hline
+1 & 0 & 1 & 0 & 0 & any & core halt and notification \\
+\hline
+1 & 1 & 1 & 1 & 0 & any & core halt and notification \\
+\hline
+\end{tabular}
+$\dagger$: regular debug behavior
+}
+
+After RESET, HTD is cleared, so all hardware traps are enabled.
+
+\paragraph{Notes} Notification of double exception is defined outside the core
+(status bit in watchdog). All exceptions disable interrupts, to avoid taking
+another interrupt when software is not ready. The code of exception handlers
+must be at least partly mapped in TLB.
+
+\item[IE] Interrupt Enable
+
+If set, the interrupts are enabled. This bit is automatically cleared
+when the PS is copied into the SPS upon acknowledging an exception or interrupt.
+
+After RESET, IE is cleared, so interrupts are disabled.
+
+\item[HLE] Hardware Loop Enable
+
+If set, the hardware loops are enabled. This bit is automatically
+cleared when the PS is copied into the SPS by exception or interrupt processing.
+
+After RESET, HLE is cleared, hardware loops are disabled.
+
+\item[SRE] Software REserved bit
+
+Currently used to enable the RISC-V instruction decoding mode.
+
+After RESET, SRE is cleared.
+
+\item[DAUS] Data Accesses Use SPS settings
+
+The PS.DAUS field allows to see the hardware TLBs, and more generally the memory
+system, through the eyes of a different PL than the current one, for data
+accesses and PROBETLB.
+
+When PS.DAUS is set to 1, all the subsequent data accesses are made with the MMU and data cache
+settings of SPS (that is an alias to SPS\_PL$<i>$ with $<i>$ the current PL), instead of those of PS. Fetch
+accesses are not sensitive to this bit and will always use the settings of PS. This means that data
+accesses are presented to the MMU and the memory system using SPS.MME, SPS.MMUP, SPS.V64,
+SPS.VS, SPS.PMJ, SPS.DCE, SPS.USE and SPS.L2E instead of PS.MME, PS.MMUP, PS.V64,
+PS.VS, PS.PMJ, PS.DCE, PS.USE and PS.L2E respectively (whatever the value of SPS.DAUS).
+The ASN used will always be MMC.ASN whatever the value of the PS.DAUS.
+As soon as PS.DAUS is cleared, data accesses are back to normal, using PS MMU and data cache
+settings.
+This may be useful when (e.g.) trying to debug an OS from a more privileged layer, itself running
+with a different MMU configuration (on/off, 32/64, different VS ...).
+
+After RESET, DAUS is cleared.
+
+\item[ICE] Instruction Cache Enable
+
+If set, the L1 instruction cache is enabled.
+
+After RESET, ICE is cleared, so the instruction cache is disabled.
+
+\item[USE] Uncached Streaming Enable
+
+If set, uncached data accesses work in streaming mode (not stalling).
+If unset, non-streaming (stalling) accesses are used.
+
+After RESET, USE is cleared, so the streaming mode is disabled.
+
+\item[DCE] Data Cache Enable
+If set, the L1 data cache is enabled.
+
+After RESET, DCE is cleared, so the data cache is disabled.
+
+\item[MME] Memory Management Enable
+
+If set, the memory management unit is enabled.
+
+After RESET, MME is cleared, so the memory management is disabled.
+
+\item[IL] Interrupt Level
+
+An interrupt priority must be strictly higher than the core Interrupt mask Level
+(IL) to be taken.  An IL value of 0xF prevents any interrupt to be accepted.
+This implies that a level 0 interrupt cannot be accepted.
+
+After RESET, IL is set to 0xF, so interrupts are disabled.
+
+\item[VS] Virtual Space.
+
+See Section~\ref{sec:virtual-spaces}
+
+After RESET, VS is cleared.
+
+\item[V64] (Virtual) 64 bits mode.
+
+If set, inform that the core uses 64-bit addresses.
+
+After RESET, V64 is cleared.
+
+\item[L2E] L2 cache enable
+
+If set, makes data and fetch accesses use the L2 cache when applicable, that is
+if the MMU page cache policy (or default mapping cache policy when the MMU is
+disabled) for the access is cached and the L2 cache is globally enabled for the
+cluster.
+
+After RESET, L2E is cleared.
+
+\item[SME] Step Mode Enable
+
+If set, inform that the core has enabled the step mode.
+
+After RESET, SME is cleared.
+
+\item[SMR] Step Mode Ready
+
+If set, inform that the core step mode is ready.
+
+After RESET, SMR is cleared.
+
+\item[PMJ] Page size Mask in JTLB
+
+This is a 4 bits mask where bit $<i>$ configures if the $<i>$th supported page
+size may be present in the JTLB or not. Bit 0 corresponds to the smallest page
+size (4KB) and bit 3 to the largest (1GB).
+For example, PS.PMJ = 0xD means that 4KB, 2MB and 512MB pages are supported but
+not the 64KB ones.
+
+When a page size is supported, a page of that size may be installed in the JTLB
+by the execution of the appropriate TLBWRITE maintenance instruction and the
+hardware will take this size into account when performing a JTLB look-up.
+Enabling/disabling some page sizes in JTLB trades performance (micro-TLB miss
+penalty via JTLB lookup latency) versus comfort of programming.
+
+After RESET, PMJ is cleared.
+
+\item[MMUP] Privileged in MMU
+
+Set ``Privileged'' (1) or ``User'' (0) for the current level PL inside a virtual space (VS). See Section~\ref{sec:virtual-spaces}
+
+After RESET, MMUP is set.
+
+\end{description}
+
+\subsubsection{Processing Configuration Register (PCR)}
+
+The Processing Configuration Register (PCR) provides the revision
+number of the core, but also the hardware options of the current
+core instance and some global settings like Coprocessor, L1 cache coherency or ECC exception mode.
+
+\input{Register-PCR}
+
+The Processing Configuration Register (PCR) is composed of the following
+bit-fields: \begin{description}
+
+\item[PID] Processing IDentifier
+
+Processing identifier in compute cluster: [0..15] for the processing engine
+cores, 16 for the resource manager core.
+
+\item[CID] Cluster IDentifier
+
+Cluster identifier in system. For compute clusters: [0..15].
+
+Set by pins on reset.
+
+\item[MID] MPPA IDentifier
+
+Revision identifier of the MPPA.
+
+Set by pins on reset.
+
+\item[CAR] Core ARchitecture revision
+
+Revision identifier of the hardware architecture.
+
+After RESET, CAR is 0x0 for the \KalrayK core.
+
+\item[CMA] Core MicroArchitecture revision
+
+Revision identifier of the hardware implementation of the architecture.
+
+After RESET, CMA is 0x0 for Coolidge V1.
+
+\item[SV] SoC version
+
+Revision identifier of the System On Chip.
+
+Set by pins on reset (Coolidge V1 = 0x0).
+
+\item[ST] SoC type version
+
+Revision identifier of the System On Chip type.
+
+Set by pins on reset (MPPA\_80 = 0x0).
+
+\item[BM] Boot Mode.
+
+To be completed.
+
+Set by pins on reset.
+
+\item[COE] COprocessor Enable
+
+If set, enable coprocessor instructions.
+
+After RESET, COE is enabled.
+
+\item[L1CE] L1 Cache Coherency Enable
+
+If set, enables the hardware L1 data cache coherency mechanism.
+
+After RESET, L1CE is cleared.
+
+\item[DSEM] Data Simple ECC Exception Mode
+
+If set, the core will take a DSECCERROR hardware trap on uncached aligned
+loads/stores when PS.USE = 0 and the memory system signals a SECC error. If
+cleared, the same circumstances will raise an interrupt instead.
+
+After RESET, DSEM is cleared.
+
+\item[TPCE] Trace PC enable
+
+If set, PC trace is enabled.
+After RESET, TPCE is cleared.
+
+\item[TPCUM] Trace PC Uninferable Mode
+
+If set, PC trace reports inferable jumps (call \& goto instructions) as uninferable for callgrind support.
+After RESET, TPCUM is cleared.
+
+\item[TPCIS] Trace PC Ignore Stall
+
+If set, the PC trace stall is ignored in the processor.
+After RESET, TPCIS is set.
+
+\end{description}
+
+PCR RESET value depends on the hardware configuration for identifiers.
+
+\subsubsection{Return Address (RA)}
+
+When a function call is performed the value of the next PC is saved to the
+Return Address (RA) register.  When an RET instruction is executed, the RA
+register (containing the return address) is copied into the PC register.
+
+The RA register has to be saved/restored within a non-leaf function (that is, a
+function which calls another function), the calling code must take care of the
+RA register by explicitly copying to a free general-purpose register or
+to the stack before calling any function, and by explicitly restoring it from
+the register or the stack before returning.
+
+\subsubsection{Compute Status (CS)}
+
+\input{Register-CS}
+
+The Compute Status (CS) register is composed of the following bit-fields:
+\begin{description}
+
+\item[IC] Integer Carry
+
+The integer carry produced and consumed by instructions ADDCD and SBFCD.
+
+\item[IO] IEEE 754 Invalid Operation
+
+Invalid Operation condition of the IEEE~754 binary floating-point standard in
+core.
+
+\item[DZ]  IEEE 754 Divide by Zero
+
+Divide by Zero condition of the IEEE~754 binary floating-point standard in core.
+
+\item[OV]  IEEE 754 Overflow
+
+Overflow condition of the IEEE~754 binary floating-point standard in core.
+
+\item[UN]  IEEE 754 Underflow
+
+Underflow condition of the IEEE~754 binary floating-point standard in core.
+
+\item[IN]  IEEE 754 Inexact
+
+Inexact condition of the IEEE~754 binary floating-point standard in core.
+
+\item[XIO] Extension IEEE 754 Invalid Operation
+
+Invalid Operation condition of the IEEE~754 binary floating-point standard in
+coprocessor.
+
+\item[XDZ]  Extension IEEE 754 Divide by Zero
+
+Divide by Zero condition of the IEEE~754 binary floating-point standard in
+coprocessor.
+
+\item[XOV]  Extension IEEE 754 Overflow
+
+Overflow condition of the IEEE~754 binary floating-point standard in coprocessor.
+
+\item[XUN]  Extension IEEE 754 Underflow
+
+Underflow condition of the IEEE~754 binary floating-point standard in
+coprocessor.
+
+\item[XIN]  Extension IEEE 754 Inexact
+
+Inexact condition of the IEEE~754 binary floating-point standard in coprocessor.
+
+\item[RM]  IEEE 754 Rounding Mode
+
+Rounding Mode of the IEEE~754 binary floating-point standard for the core: to nearest
+even (0b00), toward $+\infty$ (0b01), toward $-\infty$ (0b10), toward zero (0b11).
+
+\item[XRM]  Extension IEEE 754 Rounding Mode
+
+Rounding Mode of the IEEE~754 binary floating-point standard for the coprocessor: to nearest
+even (0b00), toward $+\infty$ (0b01), toward $-\infty$ (0b10), toward zero (0b11).
+
+\item[CC] Carry Counter
+
+\end{description}
+
+\subsubsection{Compute Status Interrupt (CSIT)}
+
+\input{Register-CSIT}
+
+The Compute Status Interrupt (CSIT) register is composed of the following
+bit-fields: \begin{description}
+
+\item[ICIE] Integer Carry Interrupt Enable
+
+Raise interrupt 13 if an instruction (such as ADDCD) outputs a carry and CS.AEIR = 0
+
+\item[IOIE] IEEE 754 Invalid Operation Interrupt Enable
+
+Raise interrupt 13 if a floating point instruction raises the IO flag and CS.AEIR = 0
+
+\item[DZIE]  IEEE 754 Divide by Zero Interrupt Enable
+
+Raise interrupt 13 if a floating point instruction raises the DZ flag and CS.AEIR = 0
+
+\item[OVIE]  IEEE 754 Overflow Interrupt Enable
+
+Raise interrupt 13 if a floating point instruction raises the OV flag and CS.AEIR = 0
+
+\item[UNIE]  IEEE 754 Underflow Interrupt Enable
+
+Raise interrupt 13 if a floating point instruction raises the UN flag and CS.AEIR = 0
+
+\item[INIE]  IEEE 754 Inexact Interrupt Enable
+
+Raise interrupt 13 if a floating point instruction raises the IN flag and CS.AEIR = 0
+
+\item[XIOIE] Extension IEEE 754 Invalid Operation Interrupt Enable
+
+Raise interrupt 13 if a coprocessor floating point instruction raises the IO flag and CS.AEIR = 0
+
+\item[XDZIE]  Extension IEEE 754 Divide by Zero Interrupt Enable
+
+Raise interrupt 13 if a coprocessor floating point instruction raises the DZ flag and CS.AEIR = 0
+
+\item[XOVIE]  Extension IEEE 754 Overflow Interrupt Enable
+
+Raise interrupt 13 if a coprocessor floating point instruction raises the OV flag and CS.AEIR = 0
+
+\item[XUNIE]  Extension IEEE 754 Underflow Interrupt Enable
+
+Raise interrupt 13 if a coprocessor floating point instruction raises the UN flag and CS.AEIR = 0
+
+\item[XINIE]  Extension IEEE 754 Inexact Interrupt Enable
+
+Raise interrupt 13 if a coprocessor floating point instruction raises the IN flag and CS.AEIR = 0
+
+\item[AEIR] Arithmetic Exception Interrupt Raised
+
+This bit is automatically set to 1 by hardware if one of the above arithmetic flags,
+ or one of the below coprocessor arithmetic flags is raised by an instruction and its corresponding 
+*IE bit is set and CS.AEIR = 0. At this point, CS.AEC is updated with the code corresponding to the 
+exception that fired, the AESPC register may receive the PC of the bundle responsible for the exception,
+ and Interrupt Line 13 is asserted.
+The processor might then take IT 13 or not depending on its state and on Interrupt Controller settings.
+
+\item[AEC] Arithmetic Exception Code
+
+When AEIR is set to 1 by hardware, this field is updated with the code of the arithmetic exception that fired.
+If a given bundle triggers several (interrupt-enabled) arithmetic exceptions, then only one IT is generated
+ and the exception with the lowest numeric code (among those that fired as early as possible in the pipeline) 
+is chosen to fill AEC.
+\\
+{\footnotesize
+\begin{tabular}{|c|p{3cm}|} \hline
+Exception Class & AEC \\ \hline
+IC & 000 \\
+IO & 001 \\
+DZ & 010 \\
+OV & 011 \\
+UN & 100 \\
+IN & 101 \\
+\hline \end{tabular}}
+\\\\
+
+\item[SPCV]  SPC Valid
+
+When AEIR is set to 1 by hardware, this field is set to 1 if the PC of the triggering instruction was 
+saved in AESPC, and to 0 otherwise. This is dependent on micro-architectural conditions.
+Typically, flags output late in the pipeline, such as inexact, underflow and overflow of the floating point 
+inverse instruction will not register their PC.
+
+\end{description}
+
+\subsubsection{Arithmetic Exception Saved PC (AESPC)}
+
+This register is automatically updated by hardware when an arithmetic
+exception interrupt is triggered (be it then taken by the core or not)
+with the PC of the bundle that raised the exception. More details about
+this mechanism can be found in the CS register section.  
+
+
+\subsubsection{Hardware Loop Registers (LS, LE, LC)}
+
+\paragraph{Loop Start (LS) register}
+Specifies the address of the first instruction bundle to be executed in the
+hardware loop.
+
+\paragraph{Loop Exit (LE) register}
+Specifies the address of the first instruction bundle after the hardware loop.
+Thus, the specified bundle is not part of the hardware loop.
+In case LE is equal to 0x0, the hardware loop is disabled.
+
+\paragraph{Loop Count (LC) register}
+Specifies the number of times the hardware loop is iterated. As a special case,
+when LC contains zero and the PC is within LS inclusive and LE exclusive, the
+hardware loop iterates forever. This case only occurs when the LOOPDO
+instruction is given the value 0.
+
+\subsubsection{Inter Process Event (IPE)}
+
+This register maintains the events received from neighboring cores when they
+execute SYNCGROUP instruction. This register also configures the event
+propagation mode between cores.
+
+\input{Register-IPE}
+
+\begin{figure}
+\centering
+  \includegraphics[width=150mm]{forward_events}
+\caption{Forward event propagation between PE cores in a cluster.}
+\label{fig:forward_propagation}
+\end{figure}
+
+\begin{figure}
+\centering
+  \includegraphics[width=150mm]{backward_events}
+\caption{Backward event propagation between PE cores in a cluster.}
+\label{fig:backward_propagation}
+\end{figure}
+
+\begin{description}
+
+\item[FE] Forward Events
+
+These 16 independent bits record events notified or transmitted by the
+predecessor PE core in the cluster (PE core numbered $n-1 \mod 16$ for PE core $n$).
+
+\item[BE] Backward Events
+
+These 16 independent bits record events notified or transmitted by the
+successor PE core in the cluster (PE core numbered $n+1 \mod 16$ for PE core $n$).
+
+\item[FM] Forward Mode
+
+These 16 independent configuration bits control the transmission of forward
+events between the current PE core $n$ and its successor $n+1 \mod 16$. When bit
+FM${}_i$ of PE core $n$ is set, any forward event $i$ received by PE core $n$ is
+also transmitted to PE core $n+1 \mod 16$, even if PE core $n$ is not executing
+a SYNCGROUP instruction (Figure~\ref{fig:forward_propagation}).
+
+\item[BM] Backward Mode
+
+These 16 independent configuration bits control the transmission of backward
+events between the current PE core $n$ and its predecessor $n-1 \mod 16$. When bit
+FM${}_i$ of PE core $n$ is set, any backward event $i$ received by PE core $n$ is
+also transmitted to PE core $n-1 \mod 16$, even if PE core $n$ is not executing
+a SYNCGROUP instruction (Figure~\ref{fig:backward_propagation}).
+
+\end{description}
+
+\subsubsection{Miscellaneous External Notifications (MEN)}
+
+This register receives and registers miscellaneous external notifications incoming
+from the system. In the current Coolidge implementation of the cluster, only the 
+RM (aka Secure Core) receives such external notifications, corresponding to 
+l2 cache job FIFO notifications on bits [15:0]. Bits [63:16] are reserved and cannot be written
+(read as zero).
+
+
+\subsubsection{Performance Monitor Registers (PM*)}
+
+Please refer to Section~\ref{sec:perf-monitor} (Performance Monitoring) for
+details about Performance Monitor feature and associated control/status registers.
+
+
+\subsubsection{Real Time Clock and Watchdog Registers (T*) (W*)}
+
+Please refer to Section~\ref{sec:real-time-control} (Timers and Watchdog) for
+details about Timers and Watchdog feature and associated control registers.
+
+\subsubsection{Memory Translation Registers (MMC, TEL and TEH)}
+
+Please refer to Section~\ref{sec:memory-management-unit} (Memory Management
+Unit) section for details on the memory translation registers.
+
+\subsubsection{Syscall Owners (SYO)}
+
+This SFR defines which PL is the target of syscall (one configuration per quarter of the 4096 scall numbers).
+
+\noindent
+This SFR is written through SYOW register.
+
+\input{Register-SYO}
+
+\begin{description}
+
+\item[Q0] Quarter 0: number of the PL that owns syscalls 0 to 1023
+
+After RESET, Q0 is cleared.
+
+\item[Q1] Quarter 1: number of the PL that owns syscalls 1024 to 2047
+
+After RESET, Q1 is cleared.
+
+\item[Q2] Quarter 2: number of the PL that owns syscalls 2048 to 3071
+
+After RESET, Q2 is cleared.
+
+\item[Q3] Quarter 3: number of the PL that owns syscalls 3072 to 4095
+
+After RESET, Q3 is cleared.
+
+\end{description}
+
+\paragraph{Notes} This can easily be used by an hypervisor to define hypervisor
+calls, through the ownership of a slice of syscalls.
+
+\subsubsection{Hardware Trap Owners (HTO)}
+
+This SFR defines which PL is the target of hardware traps (one configuration per hardware trap).
+This SFR is written through HTOW register.
+
+A double exception is a special hardware trap defined as a horizontal exception
+attempt with PS.ET = 1. This may lead to a loss of context so it is treated
+specially: \begin{itemize}
+
+\item If the double exception happens in a PL that is less privileged than the
+PL owning the double exception, then the trap is taken to the owner PL.
+
+\item Otherwise, if the double exception happens in the PL owning the double
+    exception itself, or in a more privileged one, then the trap is not taken to
+    the owner PL. Instead execution is stopped, the processor power controller
+    enters SLEEPING state and the double exception is signaled to the outside
+    world under the form of a watchdog alert. The processor will not resume
+    execution without the intervention of the outside environment, that will
+    have to wake it up and acknowledge the watchdog (by reboot).
+
+\end{itemize}
+
+\input{Register-HTO}
+
+\begin{description}
+
+\item[OPC] PL that owns opcode hardware trap.
+
+After RESET, OPC is set to level 0.
+
+\item[DMIS] PL that owns data misaligned hardware trap.
+
+After RESET, DMIS is set to level 0.
+
+\item[PSYS] PL that owns program memory system hardware trap.
+
+After RESET, PSYS is set to level 0.
+
+\item[DSYS] PL that owns data memory system hardware trap.
+
+After RESET, DSYS is set to level 0.
+
+\item[DECCG] PL that owns the Double ECC hardware trap group: PDECC + DDECC + PPAR + DPAR + TPAR.
+
+After RESET, DECCG is set to level 0.
+
+\item[SECCG] PL that owns the Single ECC hardware traps group: PSECC + DSECC.
+
+After RESET, SECCG is set to level 0.
+
+\item[NOMAP] PL that owns the no-mapping hardware trap
+
+After RESET, NOMAP is set to level 0.
+
+\item[PROT] PL that owns protection hardware trap
+
+After RESET, PROT is set to level 0.
+
+\item[W2CL] PL that owns the write to clean hardware trap
+
+After RESET, W2CL is set to level 0.
+
+\item[A2CL] PL that owns the atomic to clean hardware trap
+
+After RESET, A2CL is set to level 0.
+
+\item[DE] PL that owns the double exception hardware trap
+
+After RESET, DE is set to level 0.
+
+\item[VSFR] PL that owns the VSFRs (Virtual SFRs) hardware trap
+
+After RESET, VSFR is set to level 0.
+
+\item[PLO] PL that owns the PL (privilege level) overflow hardware trap
+
+After RESET, PLO is set to level 0.
+
+\end{description}
+
+\paragraph{Notes} The privilege trap is the one that is triggered on resource
+rights violations attempts. As such, it has no owner bits in the HTO register
+itself as such a trap is, by definition, always taken to the registered owner PL
+of the resource.
+
+\paragraph{Notes} About the VSFR hardware trap: this trap is triggered when a
+less privileged PL tries to read or write one of SFRs[3840,4095]. It fills the
+same info in the owner ES\_PL$<i>$ as a read/write to any other non-existing SFR
+(GET/SET/WFX*/RSWAP code + GPR idx + SFR idx), except that the HTC is set to a
+dedicated “VSFR” cause. It is there to provide a hook for virtual SFR accesses.
+
+\subsubsection{Interrupts Owners (ITO)}
+
+This SFR defines which PL is the target of interrupt (one configuration per interrupt).
+
+\noindent
+This SFR is written through ITOW register.
+
+Own an interrupt line means owning the related ILE + ILR + ILL fields (trap to
+the owner PL in case of less-privileged write attempt) + be the target of the
+interrupt exception when that interrupt fires.
+
+\input{Register-ITO}
+
+\begin{description}
+
+\item[IT\_$<i>$] PL that owns interrupt line number $<i>$ with $0 \le i \le 31$.
+
+After RESET, IT\_$<i>$ is set to level 0.
+
+\end{description}
+
+\subsubsection{Debug Owner (DO)}
+
+This SFR defines which PL is the owner for each debug resource.
+
+\noindent
+This SFR is written through DOW register.
+
+Own a debug resource means owning the related debug SFR / SFR fields (trap to
+the owner level in case of less-privileged write attempt) and be the target of
+the debug exception when that debug resource fires.
+
+\input{Register-DO}
+
+\begin{description}
+
+\item[B0] PL that owns the breakpoint 0. That groups the ownership of the following SFR / SFR field: DC0.BE and DBA0
+
+After RESET, B0 is set to level 0.
+
+\item[B1] PL that owns the breakpoint 1. That groups the ownership of the following SFR / SFR field: DC1.BE and DBA1
+
+After RESET, B1 is set to level 0.
+
+\item[B2] PL that owns the breakpoint 2. That groups the ownership of the following SFR / SFR field: DC2.BE and DBA2
+
+After RESET, B2 is set to level 0.
+
+\item[B3] PL that owns the breakpoint 3. That groups the ownership of the following SFR / SFR field: DC3.BE and DBA3
+
+After RESET, B3 is set to level 0.
+
+
+\item[W0] PL that owns the watchpoint 0. That groups the ownership of the following SFR / SFR field: DC0.WE, DC0.WSZ, DC0.WTYP and DWA0
+
+After RESET, W0 is set to level 0.P
+
+\item[W1] PL that owns the watchpoint 1. That groups the ownership of the following SFR / SFR field: DC1.WE, DC1.WSZ, DC1.WTYP and DWA1
+
+After RESET, W1 is set to level 0.
+
+\item[W2] PL that owns the watchpoint 2. That groups the ownership of the following SFR / SFR field: DC2.WE, DC2.WSZ, DC2.WTYP and DWA2
+
+After RESET, W2 is set to level 0.
+
+\item[W3] PL that owns the watchpoint 3. That groups the ownership of the following SFR / SFR field: DC3.WE, DC3.WSZ, DC3.WTYP and DWA3
+
+After RESET, W3 is set to level 0.
+
+
+\item[BI0] PL that owns the breakpoint instruction with id 0.
+
+After RESET, BI0 is set to level 0.
+
+\item[BI1] PL that owns the breakpoint instruction with id 1.
+
+After RESET, BI1 is set to level 1.
+
+\item[BI2] PL that owns the breakpoint instruction with id 2.
+
+After RESET, BI2 is set to level 2.
+
+\item[BI3] PL that owns the breakpoint instruction with id 3.
+
+After RESET, BI3 is set to level 3.
+
+\end{description}
+
+\subsubsection{Miscellaneous Owners (MO)}
+
+This SFR defines which PL is the owner of various \KalrayK core resources, including some SFRs / SFR fields and instructions.
+
+\noindent
+This SFR is written through MOW register.
+
+For instructions, the registered PL owner is able to execute the instruction, as are more privileged PLs. Less privileged PLs trap (privilege) to the owner PL if trying to execute the instruction.
+
+\input{Register-MO}
+
+\begin{description}
+
+\item[MMI] Memory Management Instructions. PL that owns the PROBETLB, READTLB and WRITETLB instructions.
+
+After RESET, MMI is set to level 0.
+
+\item[RFE] PL that owns the RFE instruction.
+
+After RESET, RFE is set to level 0.
+
+\item[STOP] PL that owns the STOP instruction.
+
+After RESET, STOP is set to level 0.
+
+\item[SYNC] PL that owns the SYNCGROUP instruction. This field gives also ownership on IPE.
+
+After RESET, SYNC is set to level 0.
+
+\item[PCR] PL that owns the PCR register.
+
+After RESET, PCR is set to level 0.
+
+\item[MSG] PL that owns the MMU SFR group. This means owning MMC, TEL and TEH.
+
+After RESET, MSG is set to level 0.
+
+\item[MEN] PL that owns the MEN register.
+
+After RESET, MEN is set to level 0.
+
+\item[MES] PL that owns the MES register.
+
+After RESET, MES is set to level 0.
+
+\item[CSIT] PL that owns the CSIT register. This field gives also ownership on AESPC.
+
+After RESET, CSIT is set to level 0.
+
+\item[T0] PL that owns the timer 0. This means owning T0V, T0R and timer 0 related bits in TCR (i.e.: TCR.T0CE, TCR.T0IE, TCR.T0ST and TCR.STI0).
+
+After RESET, T0 is set to level 0.
+
+\item[T1] PL that owns the timer 1. This means owning T1V, T1R and timer 1 related bits in TCR (i.e.: TCR.T1CE, TCR.T1IE, TCR.T1ST and TCR.STI1).
+
+After RESET, T1 is set to level 0.
+
+\item[WD] PL that owns the watchdog. This means owning WDC, WDR and WDOG related bits in TCR (i.e.: TCR.WIE, TCR.WUI, TCR.WIS and TCR.SWI).
+
+After RESET, WD is set to level 0.
+
+\item[PM0] PL that owns the Performance Monitor 0. This means owning PMC.PM0C and PM0.
+
+After RESET, PM0 is set to level 0.
+
+\item[PM1] PL that owns the Performance Monitor 1. This means owning PMC.PM1C and PM1.
+
+After RESET, PM1 is set to level 0.
+
+\item[PM2] PL that owns the Performance Monitor 2. This means owning PMC.PM2C and PM2.
+
+After RESET, PM2 is set to level 0.
+
+\item[PM3] PL that owns the Performance Monitor 3. This means owning PMC.PM3C and PM3.
+
+After RESET, PM3 is set to level 0.
+
+\item[PMIT] PL that owns the Performance Monitor Interrupt Mechanism. This means owning PMC.SAT, PMC.SAF, PMC.SAV and PMSA. Ownership of PMC.PM$<i>$IE is obtained by a PL if it owns both PM$<i>$ and PMIT.
+
+After RESET, PMIT is set to level 0.
+
+\item[COMM] PL that owns the inter TCA Communication mechanism. This means owning XSENDO, XRECVO, XSENDRECVO instructions and IXC register.
+
+After RESET, COMM is set to level 0.
+
+\item[TPCM] PL that owns the Trace PC Message mechanism. This means owning TPCM0, TPCM1, TPCM2 and TPCMC regsiters.
+
+After RESET, TPCM is set to level 0.
+
+\item[DISW] PL that owns the DINVALLSW instruction.
+
+After RESET, DISW is set to level 0.
+
+\end{description}
+
+\subsubsection{Processor State Owner (PSO)}
+
+This SFR defines which PL is the owner of each bit field of PS.
+
+\noindent
+This SFR is written through PSOW register.
+
+For PL$<i>$, be the owner of a PS bit field means: \begin{itemize}
+\item Be able to read it / write it
+\item Be trapped to by less privileged PLs trying to write it
+\item Be able to read/write the corresponding bit in SPS\_PL$<j>$, with $j \ge i$
+\item Be trapped to by less privileged PLs trying to write it
+
+\end{itemize}
+
+More privileged PL (those with $j < i$) are also able to read/write the
+considered PS bit, as well as its version in SPS\_PL$<k>$ with $k \ge j$.
+
+\input{Register-PSO}
+
+\begin{description}
+
+\item[PL\_0] PL that owns PS.PL[0].
+
+After RESET, PL\_0 is set to level 0.
+
+\item[PL\_1] PL that owns PS.PL[1].
+
+After RESET, PL\_1 is set to level 0.
+
+\item[ET] PL that owns the PS.ET.
+
+After RESET, ET is set to level 0.
+
+\item[HTD] PL that owns PS.HTD.
+
+After RESET, HTD is set to level 0.
+
+\item[IE] PL that owns PS.IE.
+
+After RESET, IE is set to level 0.
+
+\item[HLE] PL that owns PS.HLE.
+
+After RESET, HLE is set to level 0.
+
+\item[ICE] PL that owns PS.ICE.
+
+After RESET, ICE is set to level 0.
+
+\item[USE] PL that owns PS.USE.
+
+After RESET, USE is set to level 0.
+
+\item[DCE] PL that owns PS.DCE.
+
+After RESET, DCE is set to level 0.
+
+\item[MME] PL that owns PS.MME.
+
+After RESET, MME is set to level 0.
+
+\item[IL\_0] PL that owns PS.IL[0].
+
+After RESET, IL\_0 is set to level 0.
+
+\item[IL\_1] PL that owns PS.IL[1].
+
+After RESET, IL\_1 is set to level 0.
+
+\item[VS\_0] PL that owns PS.VS[0].
+
+After RESET, VS\_0 is set to level 0.
+
+\item[VS\_1] PL that owns PS.VS[1].
+
+After RESET, VS\_1 is set to level 0.
+
+\item[V64] PL that owns PS.ICE.
+
+After RESET, V64 is set to level 0.
+
+\item[L2E] PL that owns PS.L2E.
+
+After RESET, L2E is set to level 0.
+
+\item[SME] PL that owns PS.SME.
+
+After RESET, SME is set to level 0.
+
+\item[SMR] PL that owns PS.SMR.
+
+After RESET, SMR is set to level 0.
+
+\item[PMJ\_0] PL that owns PS.PMJ[0].
+
+After RESET, PMJ\_0 is set to level 0.
+
+\item[PMJ\_1] PL that owns PS.PMJ[1].
+
+After RESET, PMJ\_1 is set to level 0.
+
+\item[PMJ\_2] PL that owns PS.PMJ[2].
+
+After RESET, PMJ\_2 is set to level 0.
+
+\item[PMJ\_3] PL that owns PS.PMJ[3].
+
+After RESET, PMJ\_3 is set to level 0.
+
+\item[MMUP] PL that owns PS.MMUP.
+
+After RESET, MMUP is set to level 0.
+
+\end{description}
+
+\subsubsection{Debug Control (DC0)}
+
+This SFR controls the hardware watchpoint 0 and the hardware breakpoint 0.
+
+\noindent
+The watchpoints types (field WTYP) are: \\
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Watchpoint type \\ \hline
+00 & Disabled \\
+01 & Write watchpoint \\
+10 & Read watchpoint \\
+11 & Access watchpoint \\
+\hline \end{tabular} }
+\\\\
+
+\input{Register-DC0}
+
+\begin{description}
+
+\item[BE] Breakpoint 0 Enable.
+
+After RESET, BE is cleared to 0.
+
+\item[WE] Watchpoint 0 Enable.
+
+After RESET, WE is cleared to 0.
+
+\item[WTYP] Watchpoint 0 type.
+
+After RESET, WTYP is set to 0.
+
+\item[WSZ] Watchpoint 0 size.
+
+After RESET, WSZ is set to 0.
+
+\end{description}
+
+
+\subsubsection{Debug Control (DC1)}
+
+This SFR controls the hardware watchpoint 1 and the hardware breakpoint 1.
+
+The watchpoints types (field WTYP) are identical to those of DC0.
+
+\input{Register-DC1}
+
+\begin{description}
+
+\item[BE] Breakpoint 1 Enable.
+
+After RESET, BE is cleared to 0.
+
+\item[WE] Watchpoint 1 Enable.
+
+After RESET, WE is cleared to 0.
+
+\item[WTYP] Watchpoint 1 type.
+
+After RESET, WTYP is set to 0.
+
+\item[WSZ] Watchpoint 1 size.
+
+After RESET, WSZ is set to 0.
+
+\end{description}
+
+\subsubsection{Debug Control (DC2)}
+
+This SFR controls the hardware watchpoint 2 and the hardware breakpoint 2.
+
+The watchpoints types (field WTYP) are identical to those of DC0.
+
+\input{Register-DC2}
+
+\begin{description}
+
+\item[BE] Breakpoint 2 Enable.
+
+After RESET, BE is cleared to 0.
+
+\item[WE] Watchpoint 2 Enable.
+
+After RESET, WE is cleared to 0.
+
+\item[WTYP] Watchpoint 2 type.
+
+After RESET, WTYP is set to 0.
+
+\item[WSZ] Watchpoint 2 size.
+
+After RESET, WSZ is set to 0.
+
+\end{description}
+
+\subsubsection{Debug Control (DC3)}
+
+This SFR controls the hardware watchpoint 3 and the hardware breakpoint 3.
+
+The watchpoints types (field WTYP) are identical to those of DC0.
+
+\input{Register-DC3}
+
+\begin{description}
+
+\item[BE] Breakpoint 3 Enable.
+
+After RESET, BE is cleared to 0.
+
+\item[WE] Watchpoint 3 Enable.
+
+After RESET, WE is cleared to 0.
+
+\item[WTYP] Watchpoint 3 type.
+
+After RESET, WTYP is set to 0.
+
+\item[WSZ] Watchpoint 3 size.
+
+After RESET, WSZ is set to 0.
+
+\end{description}
+
+\subsubsection{Debug Breakpoint Address (DBA*)}
+
+This SFR defines virtual PC to match for breakpoints.
+
+\begin{description}
+
+\item[DBA0] Virtual PC to match for breakpoint 0.
+
+\item[DBA1] Virtual PC to match for breakpoint 1.
+
+\item[DBA2] Virtual PC to match for breakpoint 2.
+
+\item[DBA3] Virtual PC to match for breakpoint 3.
+
+\end{description}
+
+\subsubsection{Debug Watchpoint Address (DWA*)}
+
+This SFR defines virtual address to match for watchpoints.
+
+\begin{description}
+
+\item[DWA0] Virtual address to match for watchpoint 0.
+
+\item[DWA1] Virtual address to match for watchpoint 1.
+
+\item[DWA2] Virtual address to match for watchpoint 2.
+
+\item[DWA3] Virtual address to match for watchpoint 3.
+
+\end{description}
+
+\subsubsection{Memory Error Status (MES)}
+
+This SFR defines Memory Error Status.
+
+\input{Register-MES}
+
+\begin{description}
+
+\item[PSE]    SECC detected on memory answer to the instruction cache.
+
+\item[PILSY]  Program cache Invalidated Line following pSYs error.
+
+\item[PILDE]  Program cache Invalidated Line following pDEcc error.
+
+\item[PILPA]  Program cache Invalidated Line following pPArity error.
+
+\item[DSE]    SECC detected on memory answer to the data cache.
+
+\item[DILSY]  Data cache Invalidated Line following dSYs error.
+
+\item[DILDE]  Data cache Invalidated Line following dDEcc error.
+
+\item[DILPA]  Data cache Invalidated Line following dPArity error.
+
+\item[DDEE]   Data DEcc Error.
+
+\item[DSYE]   Data dSYs Error.
+
+\end{description}
+
+\subsubsection{Wake-up Status (WS)}
+\input{Register-WS}
+
+This register contains the value of the three wake-up bits (WU0, WU1 and WU2) that 
+wake-up the core from / prevent the core to enter AWAIT, SLEEP and STOP idle mode respectively.
+Please refer to Section~\ref{sec:idle-modes} for details about the idle modes and their entry/exit conditions.
+
+\subsubsection{Shadow Program Counter (SPC\_PL*)}
+
+There is one SPC\_PL$<i>$ per privilege level (i=[0,3]).
+
+The Shadow Program Counter (SPC) is updated with the current PC value when a trap, 
+syscall or interrupt is taken. It allows to update the PC in order to jump
+to the corresponding handler, while the source PC of the exception is clearly
+identified. Before clearing PS.ET, thus allowing the hardware to take new
+exceptions, SPC should be saved onto the stack.
+
+At the end of the exception handler, the RFE instruction updates PC
+from SPC, allowing the preempted code to resume. If SPC has been saved onto the
+stack, then of course it is mandatory to restore SPC from the stack before executing the
+RFE instruction.
+
+
+\subsubsection{Shadow Processing Status (SPS\_PL*)}
+
+There is one SPS\_PL$<i>$ per privilege level (i=[0,3]).
+
+The Shadow Processing Status (SPS) is updated with the current PS value when a
+trap, syscall or interrupt is taken.  It allows to update the PS for the
+corresponding handler, while the original PS, corresponding to the state before
+the exception, is clearly identified. Before clearing PS.ET, thus allowing the
+hardware to take new exceptions, SPC should be saved onto the stack.
+
+A the end of the exception or interrupt handler, the RFE instruction updates PS
+from SPS, allowing the preempted code to resume in the original state. If SPS
+has been saved onto the stack, then of course it is mandatory to restore SPS
+from the stack before executing the RFE instruction.
+
+
+\subsubsection{Excepting Address (EA\_PL*)}
+
+There is one EA\_PL$<i>$ per privilege level (i=[0,3]).
+
+The Excepting Address (EA) register gives the effective address involving
+memory instructions which has caused the hardware trap.  For other hardware
+traps, this register contains zero. It can be used in the exception handler to
+identify the origin of the hardware trap. EA is a read only register.
+
+
+\subsubsection{Exception Vector (EV\_PL*)} \label{sec:exception_vector}
+
+There is one EV\_PL$<i>$ per privilege level (i=[0,3]). Exceptions taken to
+PL$<j>$ make the core branch to: \begin{itemize}
+\item EV\_PL$<j>$ + 0 for debug exceptions.
+\item EV\_PL$<j>$ + 0x40 for trap exceptions.
+\item EV\_PL$<j>$ + 0x80 for interrupt exceptions.
+\item EV\_PL$<j>$ + 0xc0 for syscall exceptions.
+\end{itemize}
+The writable bits of EV are [40:8] (256B aligned), while bits [7:0] read as zero.
+
+\subsubsection{System-Reserved Registers (SR\_PL*)}
+
+There is one SR\_PL$<i>$ per privilege level (i=[0,3]).
+
+The Kalray core offers one register for system per privilege level.
+
+\subsubsection{Debug Support Registers}
+
+Please refer to Section~\ref{sec:on-chip-emulation} (On Chip Emulation) section
+for details on the debug registers.
+
+\subsubsection{Exception Syndrome Register (ES\_PL*)}
+
+\input{Register-ES}
+
+There is one ES\_PL$<i>$ per privilege level (i=[0,3]).
+
+The Exception Syndrome register is a SFR that is automatically updated by the
+hardware with status information when the \KalrayK core takes an exception or
+executes a bundle in step mode. The first field of ES, named \textbf{EC}, for
+\textbf{Exception Class}, can take the following possible values and associated
+meanings: \\
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+ES.EC Value & Exception Class \\ \hline
+0b0000 & Debug exception \\
+0b0001 & Hardware trap exception \\
+0b0010 & Interrupt exception \\
+0b0011 & Syscall exception \\
+0b1000 & Watch dog error \\
+0b1001 & Double exception happening because of hardware trap \\
+0b1010 & Double exception happening because of interrupt \\
+0b1011 & Double exception happening because of syscall \\
+\hline \end{tabular}}
+\\\\
+
+Codes 1001 to 1011 are used when a double exception fires. In that case, the hardware will fill the exception details of the second exception in ES.ED, as if this second exception had really fired (for debug purposes). Bit 3 of ES.EC is used to distinguish between regular exceptions and double exception traps. With respect to branching target based on EV\_PL*, double exceptions are considered as hardware traps.
+Codes 0100, 0101, 0110 and 0111 are not set by hardware. They may be used by software, e.g. for virtualization purposes.
+
+
+\par Each time ES.EC is updated by hardware with an exception class
+code, the rest of the SFR, named \textbf{ED} for \textbf{Exception
+  Details}, is simultaneously updated with different pieces of
+information that are relevant with respect to that particular
+exception class. As a result, ES.ED will contain the concatenation of
+\begin{itemize}
+
+\item OAPL, ORPL, PTAPL, PTRPL, HTC, SFRT, SFRI, GPRP, SFRP, DHT, DRX, DAF, RWX, NTA, UCA, AS, BS, DRI and PIC when taking a hardware trap
+
+\item OAPL, ORPL, PTAPL, PTRPL, ITN, ITL and ITI when taking an interrupt
+
+\item OAPL, ORPL, PTAPL, PTRPL, SN when taking a syscall
+
+\item OAPL, ORPL, PTAPL, PTRPL, DC, BN, WN, SFRI, GPRP, SFRP, DHT, DRX, DAF, RWX, NTA, UCA, AS, BS, DRI and PIC when executing a system stepi
+
+\end{itemize}
+
+The meanings and encodings of these fields are detailed below, for each exception class.
+\\\\
+
+\textbf{Debug Exception fields in ES (EC: 0000)}:
+
+\input{Register-ES-STEPI}
+
+\begin{description}
+
+\item[OAPL] (Origin Absolute PL): Privilege level before trap
+
+After RESET, OAPL is cleared.
+
+\item[ORPL] (Origin Relative PL): Relative Privilege level before trap
+
+After RESET, ORPL is cleared.
+
+\item[PTAPL] (Primary Target Absolute PL): Normal absolute trap target level (no double trap).
+
+After RESET, PTAPL is cleared.
+
+\item[PTRPL] (Primary Target Relative PL): Normal relative trap target level (no double trap).
+
+After RESET, PTRPL is cleared.
+
+\item[DCV2] (Debug Cause): code number of the debug exception taken by the core
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Debug Cause \\ \hline
+000 & Hardware breakpoint \\
+001 & Hardware watchpoint \\
+010 & Step \\
+011 & DSU break \\
+100 & Software breakpoint \\
+\hline \end{tabular} }
+
+\item[WBN] (Watchpoint / breakpoint Number): Number of the hardware watchpoint, hardware breakpoint or the software breakpoint that triggered the debug exception: 0 to 3 (significant only when DCV2 = 000, 001 and 100, if not 0)
+
+\item[SFRI] (SFR Instruction): Encoding of the SFR access instruction
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Instruction \\ \hline
+000 & Not a BCU valid instruction: no SFR access instruction. \\
+010 & GET \\
+011 & IGET \\
+100 & SET \\
+101 & WFXL \\
+110 & WFXM \\
+111 & RSWAP \\
+\hline \end{tabular} }
+
+After RESET, SFRI is cleared.
+
+\item[GPRP] (GPR Pointer): GPR index
+
+After RESET, GPRP is cleared.
+
+\item[SFRP] (SFR Pointer): SFR index
+
+After RESET, SFRP is cleared.
+
+\item[DHT] (Disabled Hardware Trap): Set when step over a disable Hardware Trap (significant only when DCV2 = 10, if not 0)
+  
+\item[DRX] (Data Register eXtension): DRI (Data Register Index) targets TCA register file.
+
+\item[DAF] (Data Access Format): Set in case of lv transpose (lv.c*)
+
+\item[RWX] (Read Write Execute):
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Interpretation \\ \hline
+000 & No data memory access in the stepped bundle (canceled non-trapping loads
+and non executed conditional ld/st are considered as such). \\
+001 & Reserved. \\
+010 & Data write memory access in the stepped bundle. \\
+100 & Data read memory access in the stepped bundle (DINVALL, DTOUCHL, DINVAL are considered as read accesses). \\
+110 & Data atomic memory access in the stepped bundle. \\
+other & Reserved. \\
+\hline \end{tabular} }
+
+\item[NTA] Non-Trapping Access: if 1, the stepped bundle contains a
+  speculative data memory access; if 0, the stepped bundle contains a regular
+  data memory access (significant only when RWX = 010 or RWX = 100 or RWX = 110)
+
+\item[UCA] (Un-Cached Access): if 1, the stepped bundle contains a *U LSU
+  instruction; if 0, the stepped bundle contains a non *U LSU instruction
+  (significant only when RWX = 010 or RWX = 100 or RWX = 110)
+
+\item[AS] Access Size: size of the data access contained in the stepped bundle
+  (significant only when RWX = 010 or RWX = 100 or RWX = 110)
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Interpretation \\ \hline
+000001 & Byte access. \\
+000010 & Half-word access. \\
+000100 & Word access (including atomic word size instructions). \\
+001000 & Double-word access (including atomic double-word size instructions). \\
+010000 & Quad-word access. \\
+100000 & Octo-word access. \\
+111111 & Cache line-size access (DZEROL). \\
+100001 & Cache maintenance access (DINVALL, DTOUCHL, DINVAL). \\
+other & Reserved. \\
+\hline \end{tabular} }
+
+\item[BS] (Bundle Size): Size of the stepped bundle
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Interpretation \\ \hline
+0000 & Reserved. \\
+0001 & 32 bits (1 syllable). \\
+0010 & 64 bits (2 syllables). \\
+0011 & 96 bits (3 syllables). \\
+0100 & 128 bits (4 syllables). \\
+0101 & 160 bits (5 syllables). \\
+0110 & 192 bits (6 syllables). \\
+0111 & 224 bits (7 syllables). \\
+1000 & 256 bits (8 syllables). \\
+\hline \end{tabular} }
+
+\item[DRI] (Data Register Index): Index of the GPR holding the source or destination
+  operand of the data memory access in the bundle (significant only when
+  RWX = 010 or RWX = 100 or RWX = 110)
+
+\item[PIC] (Privileged Instruction Code): Code of the privileged instruction of the stepped bundle
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Instruction \\ \hline
+0000 & No privileged instruction \\
+0001 & TLBWRITE \\
+0010 & TLBREAD \\
+0011 & TLBPROBE \\
+0100 & RFE \\
+0101 & STOP \\
+0110 & SYNCGROUP \\
+0111 & XSENDO or XRECVO or XSENDRECVO \\
+1000 & DINVALSW \\
+1111 & Multiple privilege instruction \\
+\hline \end{tabular} }
+
+\end{description}
+
+\textbf{Hardware traps fields in ES (EC: 0001)}:
+
+\input{Register-ES-TRAP}
+
+\begin{description}
+
+\item[OAPL] (Origin Absolute PL): Privilege level before trap
+
+After RESET, OAPL is cleared.
+
+\item[ORPL] (Origin Relative PL): Relative Privilege level before trap
+
+After RESET, ORPL is cleared.
+
+\item[PTAPL] (Primary Target Absolute PL): Normal absolute trap target level (no double trap).
+
+After RESET, PTAPL is cleared.
+
+\item[PTRPL] (Primary Target Relative PL): Normal relative trap target level (no double trap).
+
+After RESET, PTRPL is cleared.
+
+\item[HTC] (Hardware Trap Cause): code number of the hardware trap taken by the core
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Hardware Cause \\ \hline
+00000 & Reserved \\
+00001 & OPCODE \\
+00010 & PRIVILEGE \\
+00011 & DMISALIGN \\
+00100 & PSYSERROR \\
+00101 & DSYSERROR \\
+00110 & PDECC \\
+00111 & DDECC \\
+01000 & PPAR \\
+01001 & DPAR \\
+01010 & PSECC \\
+01011 & DSECC \\
+01100 & NOMAPPING \\
+01101 & PROTECTION \\
+01110 & WRITETOCLEAN \\
+01111 & ATOMICTOCLEAN \\
+10000 & TPAR \\
+10001 & DOUBLE\_EXCEPTION \\
+10010 & VSFR \\
+10011 & PL\_OVERFLOW \\
+\hline \end{tabular} }
+
+\item[SFRT] (SFR Trap): Trap caused by a SFR access
+
+After RESET, SFRT is cleared.
+
+\item[SFRI] (SFR Instruction): Encoding of the SFR access instruction
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Instruction \\ \hline
+000 & Not a BCU valid instruction: no SFR access instruction. \\
+010 & GET \\
+011 & IGET \\
+100 & SET \\
+101 & WFXL \\
+110 & WFXM \\
+111 & RSWAP \\
+\hline \end{tabular} }
+
+After RESET, SFRI is cleared.
+
+\item[GPRP] (GPR Pointer): GPR index
+
+After RESET, GPRP is cleared.
+
+\item[SFRP] (SFR Pointer): SFR index
+
+After RESET, SFRP is cleared.
+
+\item[DHT] (Disabled Hardware Trap): Set when taken a disable Hardware Trap
+
+\item[DRX] (Data Register eXtension): DRI (Data Register Index) targets TCA register file.
+
+\item[DAF] (Data Access Format): Set in case of lv transpose (lv.c*)
+
+\item[RWX] (Read Write Execute):
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Interpretation \\ \hline
+000 & Not a memory trap. \\
+001 & Fetch side memory trap. \\
+010 & Data side memory trap on a write access (DZEROL is considered as a write access). \\
+100 & Data side memory trap on a read access (including DINVALL, DTOUCHL, DINVAL, WPURGE). \\
+110 & Data side memory trap on an atomic access. \\
+other & Reserved. \\
+\hline \end{tabular} }
+
+\item[NTA] Non-Trapping Access: if 1, trap was caused by a non-trapping data
+  memory access; if 0, trap was caused by a regular data memory access
+  (significant only when RWX = 010 or RWX = 100 or RWX = 110)
+
+\item[UCA] (Un-Cached Access): If 1, trap was caused by an uncached memory
+  access instruction (significant only when RWX = 010 or RWX = 100 or RWX = 110)
+
+\item[AS] Access Size: size of the data access that caused the trap
+  (significant only when RWX = 010 or RWX = 100 or RWX = 110)
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Interpretation \\ \hline
+000001 & Byte access. \\
+000010 & Half-word access. \\
+000100 & Word access (including atomic word size instructions). \\
+001000 & Double-word access (including atomic double-word size instructions). \\
+010000 & Quad-word access. \\
+100000 & Octo-word access. \\
+111111 & Cache line-size access (DZEROL). \\
+100001 & Cache maintenance access (DINVALL, DTOUCHL, DINVAL). \\
+other & Reserved. \\
+\hline \end{tabular} }
+
+\item[BS] (Bundle Size): Size of the bundle that caused the trap
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Interpretation \\ \hline
+0000 & Reserved. \\
+0001 & 32 bits (1 syllable). \\
+0010 & 64 bits (2 syllables). \\
+0011 & 96 bits (3 syllables). \\
+0100 & 128 bits (4 syllables). \\
+0101 & 160 bits (5 syllables). \\
+0110 & 192 bits (6 syllables). \\
+0111 & 224 bits (7 syllables). \\
+1000 & 256 bits (8 syllables). \\
+\hline \end{tabular} }
+
+\item[DRI] (Data Register Index): Index of the GPR holding the source or destination
+  operand of the data memory access that caused the trap (significant only when
+  RWX = 010 or RWX = 100 or RWX = 110)
+
+\item[PIC] (Privileged Instruction Code): Code of the privileged instruction of the trapping instruction when \$es.sfrt is set and \$es.htc is PRIVILEGE.
+                                          Else code of the privileged instruction of the trapped bundle.
+
+{\footnotesize
+\begin{tabular}{|c|p{13cm}|} \hline
+Value & Instruction \\ \hline
+0000 & No privileged instruction \\
+0001 & TLBWRITE \\
+0010 & TLBREAD \\
+0011 & TLBPROBE \\
+0100 & RFE \\
+0101 & STOP \\
+0110 & SYNCGROUP \\
+0111 & XSENDO or XRECVO or XSENDRECVO \\
+1000 & DINVALSW \\
+1111 & Multiple privilege instruction (could not appear when \$es.sfrt is set and \$es.htc is PRIVILEGE)\\
+\hline \end{tabular} }
+
+\end{description}
+
+\textbf{Interrupts fields in ES (EC: 0010)}:
+
+\input{Register-ES-INTERRUPT}
+
+\begin{description}
+
+\item[OAPL] (Origin Absolute PL): Privilege level before trap
+
+After RESET, OAPL is cleared.
+
+\item[ORPL] (Origin Relative PL): Relative privilege level before trap
+
+After RESET, ORPL is cleared.
+
+\item[PTAPL] (Primary Target Absolute PL): Normal absolute trap target level (no double trap).
+
+After RESET, PTAPL is cleared.
+
+\item[PTRPL] (Primary Target Relative PL): Normal relative trap target level (no double trap).
+
+After RESET, PTRPL is cleared.
+
+\item[ITN] (InTerrupt Number): number of the interrupt taken by the core
+
+\item[ITL] (InTerrupt Level): level of the interrupt taken by the core
+
+\item[ITI] (InTerrupt Info): copy of the MES SFR content when an interrupt
+  related to a memory error is taken by the \KalrayK core (namely: IT nb 12 for SECCs, 16
+  for Data asynchronous memory errors, or 17 for i$/d$ line invalidations)
+
+\end{description}
+
+
+\textbf{System calls fields in ES (EC: 0011)}:
+
+\input{Register-ES-SYSCALL}
+
+\begin{description}
+
+\item[OAPL] (Origin Absolute PL): Privilege level before trap
+
+After RESET, OAPL is cleared.
+
+\item[ORPL] (Origin Relative PL): Relative privilege level before trap
+
+After RESET, ORPL is cleared.
+
+\item[PTAPL] (Primary Target Absolute PL): Normal absolute trap target level (no double trap).
+
+After RESET, PTAPL is cleared.
+
+\item[PTRPL] (Primary Target Relative PL): Normal relative trap target level (no double trap).
+
+After RESET, PTRPL is cleared.
+
+\item[SN] (Syscall Number): copy of the \texttt{sysnumber} argument of the SCALL
+  instructions
+
+\end{description}
+
+
+\subsubsection{Write aliases to read only SFRs owner registers}
+
+\begin{description}
+
+\item [SYOW] SYscall Onwers Write: Alias to SYO. Used to write read only SYO according to SYO and current PL.
+
+\item [HTOW] Hardware Trap Onwers Write: Alias to HTO. Used to write read only HTO according to HTO and current PL.
+
+\item [ITOW] InTerrupt Onwers Write: Alias to ITO. Used to write read only ITO according to ITO and current PL.
+
+\item [DOW] Debug Onwers Write: Alias to DO. Used to write read only DO according to DO and current PL.
+
+\item [MOW] Miscellaneous Onwers Write: Alias to MO. Used to write read only MO according to MO and current PL.
+
+\item [PSOW] Processor State Owners Write: Alias to PSO. Used to write read only PSO according to PSO and current PL.
+
+\end{description}
+
+\subsubsection{Aliases to banked SFR registers}
+
+\begin{description}
+
+\item [SPC] Shadow Program Counter: Alias to SPC\_PL[PS.PL].
+
+\item [SPS] Shadow Processor State: Alias to SPS\_PL[PS.PL].
+
+\item [EA] Effective Address: Alias to EA\_PL[PS.PL].
+
+\item [EV] Exception Vector: Alias to EV\_PL[PS.PL].
+
+\item [SR] System Register: Alias to SR\_PL[PS.PL].
+
+\item [ES] Exception Syndrome: Alias to ES\_PL[PS.PL].
+
+\end{description}
+

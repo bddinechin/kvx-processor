@@ -1,0 +1,70 @@
+% KVX V2 Core Instruction Set Summary
+% Copyright (c) Karlay 2012
+% Tex skeleton from Laurent Gregoire VIM Quick Reference Card
+% TeX Format
+% Command for PDF: pdftex Refcard.tex
+
+\pdfoutput=1
+\pdfpageheight=21cm
+\pdfpagewidth=29.7cm
+
+% Font definitions
+\font\bigbf=cmbx10 scaled \magstep3
+\font\smallrm=cmr8
+\font\smalltt=cmtt8
+\font\tinyit=cmmi5
+
+\def\title#1{\hfil{\bf #1}\hfil\par\vskip 2pt\hrule}
+\def\cm#1#2{{\tt#1} \dotfill{\smallrm #2}\par}
+\def\cn#1{\hfill$\lfloor$ #1\par}
+\def\sect#1{\hskip 1cm \vskip 0.7cm {\bigbf#1\/}\par}
+
+% Three columns definitions
+\parindent 0pt
+\nopagenumbers
+\hoffset=-1.56cm
+\voffset=-1.54cm
+\newdimen\fullhsize
+\fullhsize=27.9cm
+\hsize=8.5cm
+\vsize=19cm
+\def\fullline{\hbox to\fullhsize}
+\let\lr=L
+\newbox\leftcolumn
+\newbox\midcolumn
+\output={
+  \if L\lr
+    \global\setbox\leftcolumn=\columnbox
+    \global\let\lr=M
+  \else\if M\lr
+    \global\setbox\midcolumn=\columnbox
+    \global\let\lr=R
+  \else
+    \tripleformat
+    \global\let\lr=L
+  \fi\fi
+  \ifnum\outputpenalty>-20000
+  \else
+    \dosupereject
+  \fi}
+\def\tripleformat{
+  \shipout\vbox{\fullline{\box\leftcolumn\hfil\box\midcolumn\hfil\columnbox}}
+  \advancepageno}
+\def\columnbox{\leftline{\pagebody}}
+
+% Card content
+% Header
+%\hrule\vskip 3pt
+
+\title{KV3 VLIW V2 Core Instruction Set Summary}
+
+\input Summary.tex
+
+
+% Ending
+\supereject
+\if L\lr \else\null\vfill\eject\fi
+\if L\lr \else\null\vfill\eject\fi
+\bye
+
+% EOF

@@ -1,0 +1,520 @@
+\section{Core Overview}
+
+The \KalrayK core implements a 32-bit and 64-bit 6-issue Very Long Instruction
+Word (VLIW) architecture with a 8-stage instruction pipeline. Groups of
+instructions that issue together are encoded by the compiler into
+\emph{instruction bundles} (or ``bundles''). A distinguishing feature of VLIW
+execution is that a swap of two registers can be done by two copy instructions
+placed inside the same bundle.
+
+The \KalrayK core architecture has 64$\times$64-bit general-purpose registers (GPRs) that
+can be fully operated on both in 32-bit and 64-bit execution mode. It includes
+arithmetic support for both 32-bit and 64-bit scalars as well as SIMD on quadruple
+16-bit data and 32-bit paired data.  The \KalrayK core architecture is
+byte-addressable little endian. The architecture is also a bit-little endian, in
+the sense that bit 0 of any data is always the least significant bit (little
+endian), and is shown at the rightmost position in figures.
+
+\subsection{Datapath Organization}
+
+The \KalrayK core includes two arithmetic and logic units, a
+multiply-accumulate/floating-point unit, a load/store unit, and a branch and
+control unit. These five execution units are primarily connected through a
+shared register file of 64$\times$64-bit general-purpose registers, that allows
+reading up to nine 64-bit registers plus one 256-bit register quadruple, and writing up to
+two 64-bit registers plus two 256-bit register quadruple per cycle. The five execution
+units also share system function registers (SFRs) for program control and
+compute status. A Prefetch Buffer (PFB) is in charge of fetching the
+instructions and preparing them for dispatch to the execution units.  The block
+diagram of the \KalrayK core is shown on Figure~\ref{fig:coolidge-vliwcore}.
+
+\begin{figure}
+\centering
+  \includegraphics[width=.5\textwidth]{coolidge-vliwcore}
+\caption{\KalrayK VLIW core block diagram.}
+\label{fig:coolidge-vliwcore}
+\end{figure}
+
+The \KalrayK core is associated with a coprocessor operating as a
+tightly-coupled accelerator (TCA). On the current \KalrayK core, the coprocessor
+includes a datapath and operators designed for deep learning acceleration. It
+features 48$\times$256-bit registers, and associating them in pair or quadruples
+provide 512-bit and 1024-bit operands (Figure~\ref{fig:tensor-coprocessor}).
+
+\begin{figure}
+\centering
+  \includegraphics[width=.5\textwidth]{tensor-coprocessor}
+\caption{\KalrayK VLIW core tensor coprocessor.}
+\label{fig:tensor-coprocessor}
+\end{figure}
+
+\subsubsection{Pipelined Implementation}
+
+The execution pipeline comprises five stages: E1, E2, E3, E4, and E5
+(coprocessor); all executions
+begin in E1, with the exception of branches that are computed and taken as soon
+as possible, at ID or RR stage, to reduce the branch penalty. Most operands are read
+or bypassed for execution at the end of RR. This execution pipeline allows
+arithmetic and load/store instructions to execute for up to four cycles if
+needed. The results of instructions that complete earlier than E4 are made
+available for bypassing as operands to subsequent instructions.
+
+The instruction pipeline of the \KalrayK core is interlocked, i.e., run-time
+stalls occur whenever an instruction tries to access a register that is not
+data-ready.
+
+
+\subsubsection{Prefetch Buffer (PFB)}
+
+Within the \KalrayK core, a prefetch buffer (PFB) is responsible for issuing
+instruction bundles to the core. The PFB manages 4 lines of 4$\times$32-bit and
+receives blocks of 4$\times$32-bit from the instruction cache every clock cycle,
+assuming that these blocks are in the instruction cache (fetch hit) and do not
+cross a level-1 cache line boundary (64-byte).
+
+The PFB attempts to fetch ahead in order to keep its 4 lines of 4$\times$32-bit
+full. When a branch is taken, the PFB is flushed and a new fetch starts from the
+target address. After a branch, the PFB takes one cycle to fetch the next bundle
+from the cache. Branching to a bundle that is split over two cache lines
+requires two cycles to fetch the bundle.
+
+The PFB also provides 0-cycle overhead hardware loop support, allowing to
+automatically jump from the end to the beginning of a hardware loop without
+branch penalty.
+
+\subsubsection{Branch and Control Unit (BCU)}
+
+The \KalrayK core has a branch and control unit (BCU). This unit supports
+PC-relative and indirect branches or calls. The branch unit also supports
+hardware looping, also known as zero overhead loops.  Due to instruction
+pipelining, all taken branches (not including hardware looping) involve run-time
+stalls: one cycle for unconditional direct branches and two cycles for
+conditional and indirect branches. Not taken conditional branches involve no
+stalls. Branch stalls are not visible at the architecture level, that is, there
+are no delayed branches.
+
+In case of \MPPA{} clusters, each \KalrayK PE core is connected to its direct
+predecessor and successor by wires that transport events for direct
+synchronization. The BCU executes all instructions related to event operations.
+
+\smallskip 
+See Section~\ref{sec:BCU-instructions} for BCU instructions.
+
+\subsubsection{Arithmetic and Logic Units (ALUs)}
+
+The \KalrayK core has two main arithmetic and logic units (ALU0 and ALU1).
+Each unit is capable of executing one instruction per cycle on 64-bit integers
+or packed 32-bit data.  The results of the ALUs are 64-bit wide and can be used
+as operands of the next instruction bundle; This is equivalent to a pipeline
+depth of one cycle.
+
+Integer signed, unsigned, and signed saturated instructions are available on
+each ALU, and also single cycle floating-point operations such as compare, min
+and max. In addition, ALU0 is capable of executing specific instructions such as
+PC-relative addition, 64-bit$\pm$64-bit with carry, and direct computation of
+32-bit binary floating-point $\frac{1}{x}$ and $\frac{1}{\sqrt{x}}$.  These
+reciprocal instructions have a latency of 15 cycles, but are fully pipelined.
+
+\smallskip 
+See Section~\ref{sec:ALU-instructions} for ALU instructions.
+
+\subsubsection{Multiply-Accumulate Unit (MAU)}
+
+The \KalrayK core multiply-accumulate unit (MAU) is pipelined with a depth of
+two cycles, executing one instruction every cycle. The multiply unit takes up to
+four 64-bit operands (two single 64-bit registers and one 128-bit register pair)
+and produces a single 64-bit or a pair of two 64-bits results at E2.
+
+The MAU supports 64-bit by 64-bit integer multiplication with accumulation on 64
+or 128 bits.  It also supports multiplicative SIMD operations on vectors of two
+or four packed 32-bits words. Finally, it supports carryless multiplications for
+use in Galois field arithmetic, and flexible CRC computations.
+
+In order to speed up integer intensive codes, the MAU also includes a 64-bit
+tiny ALU unit that is able to execute a subset of the 64-bit (and SIMD 32-bit)
+arithmetic and logic instructions if the MAU is not used for
+multiplication/accumulation instructions in the same bundle.
+
+\smallskip
+See Section~\ref{sec:MAU-instructions} for MAU instructions.
+
+\subsubsection{Floating-Point Unit (FPU)}
+
+The \KalrayK core FPU includes a dual multiply-add unit (FMA) in
+single precision and a multiply-add unit in double precision. All floating-point
+instructions operate in conformance with the IEEE754-2008 standard for binary
+floating-point numbers, including sub-normals and four rounding modes. Correctly
+rounded division and square root instructions are available by executing
+Newton-Raphson iterations on values provided by seed generators for the 32-bit
+and 64-bit floating-point $\frac{1}{x}$ and $\frac{1}{\sqrt{x}}$.
+
+The FPU of the \KalrayK core supports 32-bit binary floating-point dot-product
+of 32-bit pairs accumulated into 64-bit binary floating-point results. These
+instructions allow to evaluate dot-product and polynomial evaluations in mixed
+precision. Finally, the FPU support a $2\times 2$ matrix-multiply operation on
+pairs of 32-bit binary floating-point numbers, resulting into a 32-bit binary
+floating-point quadruple (128-bit operands held in register pairs).
+
+As the FPU shares hardware with the MAU (including register file read ports
+and multipliers), FPU instructions cannot be bundled with integer MAU
+instructions.
+
+\smallskip
+See Section~\ref{sec:FPU-instructions} for FPU instructions.
+
+\subsubsection{Load/Store Unit (LSU)}
+
+The \KalrayK core has a single load/store unit; This unit is pipelined with a
+latency of three cycles in the data cache, executing one instruction every
+cycle. The load/store unit can take up to three operands (two operands for the
+effective address computation, and one operand for the store instructions).
+Every clock cycle, the core is able to load or store 256 bits to/from a register
+quadruple, 128 bits to/from a register pair, or 64 bits to/from a register. When
+reading less than 64 bits from memory, the load instructions zero-extend or
+sign-extend the memory datum to the 64 bits of the destination register. The
+coprocessor may only load or store 256 bits to/from a coprocessor register.
+
+The LSU also supports 3 different atomic operations (fetch-and-add,
+compare-and-swap, load-and-clear) for both 32-bit and 64-bit data sizes.
+
+The \KalrayK core supports the following five addressing modes:
+\begin{itemize}
+
+\item A base address register plus a 10-bit signed, unscaled immediate constant.
+
+\item A base address register plus a 37-bit signed, unscaled immediate constant.
+
+\item A base register plus or minus an index register, optionally scaled by the
+    datum size in memory.
+\item A base register, access conditionally executed depending on a test of
+  another register.
+\item A base register plus a 27-bit signed, unscaled immediate constant, access
+  conditionally executed depending on a test of another register.
+
+\end {itemize}
+
+In non device memory areas, the \KalrayK core supports memory accesses with
+misaligned effective addresses for regular loads/stores.  Atomic instructions
+and accesses to device memory areas must be aligned on the size of the accessed
+object. If not, the \KalrayK core will take a DMISALIGN trap.
+
+In order to speed up integer intensive codes, the LSU also includes a 64-bit
+light ALU unit that is able to execute a subset of the 64-bit (and SIMD 32-bit)
+arithmetic and logic instructions if the LSU is not used for loads/stores
+instructions in the same bundle.
+
+\smallskip
+See Section~\ref{sec:LSU-instructions} for LSU instructions.
+
+\subsection{Data Types and Representations}
+
+The \KalrayK core instruction set architecture (ISA) efficiently supports 8-bit,
+16-bit, 32-bit, 64-bit, and 128-bit scalar types, and also 16-bit or 32-bit data
+types packed into 64-bit containers. Traditional SIMD computing involving 16-bit
+or 32-bit numbers packed in 128-bit containers found in other architectures is
+emulated on the \KalrayK core by dual-issuing instructions that operate on data
+types packed into 64-bit registers. The non-packed data types are interpreted as
+signed integers, unsigned integers, fractional numbers, and floating-point
+numbers.
+
+\subsubsection{Signed Integers}
+
+An integer is expressed as a binary number of 2's complement and is 8-, 16-,
+32-, 64-bit, or 128-bit long. Regardless of its length, the bit 0 of an integer
+is always the least significant bit. Because 2's complement is used, the most
+significant bit is used as a sign bit.
+
+\begin{center}
+\begin{tabular}{|c|c|} \hline
+{Data Length} & {Value Range} \\ \hline
+{8 bits} & $-2^7$ to $+2^7 - 1$ \\
+{16 bits} & $-2^{15}$ to $+2^{15} - 1$ \\
+{32 bits} & $-2^{31}$ to $+2^{31} - 1$ \\
+{64 bits} & $-2^{63}$ to $+2^{63} - 1$ \\
+{128 bits} & $-2^{127}$ to $+2^{127} - 1$ \\ \hline
+\end{tabular}
+\end{center}
+
+\subsubsection{Unsigned Integers}
+
+An unsigned integer is a binary number whose most significant bit has a positive
+weight and is 8-bit, 16-bit, 32-bit, 64-bit, or 128-bit long.
+
+\begin{center}
+\begin{tabular}{|c|c|} \hline
+{Data Length} & {Value Range} \\ \hline
+{8 bits} & $0$ to $+2^8 - 1$ \\
+{16 bits} & $0$ to $+2^{16} - 1$ \\
+{32 bits} & $0$ to $+2^{32} - 1$ \\
+{64 bits} & $0$ to $+2^{64} - 1$ \\
+{128 bits} & $0$ to $+2^{128} - 1$ \\ \hline
+\end{tabular}
+\end{center}
+
+\subsubsection{Floating-Point Numbers}
+
+The \KalrayK core represents floating-point numbers in little-endian binary
+format, according to the IEEE754~2008 standard.
+
+For 16-bit binary floating-point numbers, the representation is as follows:
+
+\bitfields{ 1/s, 5/exponent, 10/fraction}
+
+For 32-bit binary floating-point numbers, the representation is as follows:
+
+\bitfields{ 1/s, 8/exponent, 23/fraction}
+
+For 64-bit binary floating-point numbers, the representation is as follows:
+
+\bitfields{ 1/s, 11/exponent, 20/fraction, 32/fraction}
+
+\subsubsection{Data Transfers}
+
+Data transfers between the general purpose registers of the core and data memory
+can be of 8, 16, 32, 64, 128, or 256 bits:
+\begin{itemize}
+
+\item 8-bit, 16-bit and 32-bit data can be loaded as scalars, one at a time,
+    using LBS/LBZ, LHS/LHZ, and LWZ/LWS instructions respectively. They are then
+    sign-extended/zero-extended to 64 bits as appropriate before being stored into the
+    target register.
+
+\item When loading 64-bit data, they are directly stored into the target
+  register.
+
+\item When loading 128-bit data, they are directly stored into the target
+ register pair ($R_{i}$ and $R_{i+1}$, with $i$ even).
+
+\item When loading 256-bit data, they are directly stored into the target
+ register quadruple ($R_{i}$ and $R_{i+3}$, with $i$ even).
+
+\end{itemize}
+
+\subsubsection{Materialization of Constants}
+
+The \KalrayK core allows to construct 64-bit constants in any general purpose
+register, by using the MAKE instruction.  The following table
+summarizes the size of immediate constants depending on the type of instruction
+format:
+
+\begin{center}
+\begin{tabular}{|l|l|l|} \hline
+Instruction Type & Immediate Constant & Instruction Size \\ \hline
+MAKE & 16-bit signed & 32-bit \\
+MAKE & 37-bit & 64-bit \\
+MAKE & 64-bit & 96-bit \\
+ALU, MAU, LSU & 10-bit signed & 32-bit \\
+ALU, MAU, LSU & 37-bit & 64-bit \\
+\hline \end{tabular}
+\end{center}
+
+
+\subsection{VLIW Instruction Bundles}
+
+\subsubsection{Instruction Bundle Memory Structure}
+
+On the \KalrayK core, the bundles are composed of instructions, each of which is
+encoded with one to three 32-bit instruction words called \emph{syllables}. A
+valid \KalrayK core bundle consists of a sub-sequence of up to eight syllables
+in the following order (increasing memory addresses):
+
+\begin{verbatim}
+BCUi TCAi ALU0i ALU1i MAUi LSUi ALU0x ALU1x MAUx LSUx
+\end{verbatim}
+
+\noindent That is, instruction syllables are ordered by type, with BCU first,
+TCA second, ALU third, etc.  In case of immediate extensions, the corresponding
+syllables appear at the end of the bundle in the same order (BCU and TCA instructions
+cannot have immediate extensions). Please refer to Section~\ref{sec:encoding} for
+the details of instruction bundle encoding.
+
+\subsubsection{Instruction Bundles in Assembly Language}
+
+At the assembly language level, the instructions may appear in any order and the
+immediate extensions are not apparent. These extensions are inferred from the
+number of bits required to encode the immediate values. For instance, a valid
+bundle appears the assembly language level could appear as sub-sequence of:
+
+{
+\begin{lstlisting}
+        BCU
+        TCA
+        ALU0
+        ALU1
+        MAU
+        LSU
+        ;;
+\end{lstlisting}
+}
+
+Precisely, each instruction is separated from the next one either by an end of
+line or by a `\texttt{;}' character. The end of the bundle is marked by a
+`\texttt{;;}' alone in its line. Like with most assembly languages, a single
+`\texttt{\#}' character introduces a comment that extends until the end of the
+line.
+
+\subsubsection{Instruction Bundle Resource Constraints}
+
+The other rules to ensure bundle validity are related to micro-architecture
+resource constraints. Please refer to Section~\ref{sec:constraints} for detailed
+instruction bundling constraints.
+
+The \KalrayK VLIW core execution model ensures that whenever a register appears
+as source operand and target operand of different instructions inside a bundle,
+the old register value is seen by the source operands.  Precisely, the
+Write-After-Read (WAR) dependence latency is zero, the Write-After Write (WAW)
+latency is one, and the Read-After-Write (RAW) dependence latency is strictly
+positive.
+
+
+\subsection{Memory Subsystem}
+
+The \KalrayK core memory model is such as two accesses of the same nature
+(cached or uncached) issued by the same core to the same memory location are
+guaranteed to complete in program order. Accesses to different memory locations
+are not guaranteed to complete in any particular order. A FENCE instruction can
+be used to force all previously issued data memory accesses to complete before a new
+data memory access can be issued by the core.  
+
+Furthermore, misaligned write accesses crossing a 64-byte boundary may complete
+in a non-atomic way, i.e. an other core reading at the same misaligned
+address shortly after the write from the first core might see the update of
+the bottom part but not that of the top part or conversely. Then again, the
+execution of FENCE by a core guarantees that all the previous accesses of
+this core (be they misaligned or not) have completed before it can emit new
+data accesses.
+
+Data L1 cache coherency is implemented using a directory in the shared memory
+(SMEM) of the clusters grouping 16 \KalrayK cores. As a result, a store from
+core 1 is guaranteed to be seen by a core 2 polling on the same SMEM address
+with loads after some time (equal to the time taken by the store to reach the
+memory plus a fixed number of cycles). If core 1 executes a FENCE after its
+store, it is guaranteed that the store has been made visible to core 2 before
+any new data access can be issued from core 1.
+
+No hardware coherency mechanism exists with respect to the instruction cache.
+Instruction cache lines need to be manually invalidated (using IINVAL*
+instructions) to support, e.g. self-modifying code.
+
+The \KalrayK core memory subsystem includes the following components: \begin{itemize}
+
+\item Processor cache arbiter (PCA).
+\item Instruction cache (IC).
+\item Data cache (DC).
+
+\end{itemize}
+
+\subsubsection{Processor Cache Arbiter (PCA)}
+
+The \KalrayK core features separate instruction and data caches that support,
+respectively, the fetch of instructions and the load/store data accesses.
+These two independent caches are connected to the outside memory system by a
+simple arbiter: the PCA.
+
+\subsubsection{Instruction Cache (IC)}
+
+The instruction cache of the \KalrayK core receives fetch requests from the PFB
+and returns groups of up to four 32-bit syllables that will later be assembled
+into bundles by the prefetch buffer. It has 16K bytes capacity, is 4-way set
+associative with LRU (Least Recently Used) replacement policy and 64-byte
+lines.
+
+When the instruction words requested by the PFB are not in the cache, they are
+fetched from the memory system (with a critical-word-first scheme) and stored
+into the cache. During this time the core may stall, depending on the state of
+the PFB. The requested syllables are then returned to the PFB.
+
+To invalidate the instruction cache safely, the core must execute the IINVAL
+instruction followed by the BARRIER instruction. This will invalidate the whole
+instruction cache, and trigger a re-fetch that will flush the PFB and miss
+in the invalidated instruction cache.
+
+The instruction cache is globally disabled by clearing the ICE bit of the PS
+register, see Section~\ref{sec:sfr}. The different instruction cache policies
+(cache enable, cache bypass) are set by the Memory Management Unit, see
+Section~\ref{sec:memory-management-unit}.
+
+\subsubsection{Data Cache (DC)}
+
+The data cache receives load/store/atomic requests from the LSU and returns the
+requested data to the core. It is write-through no write-allocate, has 16K bytes
+capacity, is 4-way set associative with LRU replacement policy and 64-byte
+lines.
+
+Store requests are directly sent to the memory, updating the cache by the way if
+they hit. In case a cached store misses, no line allocation is done in the cache
+and the store is simply posted to the memory.
+
+If a store is aligned, uncached (by way of PS.DCE = 0, see
+Section~\ref{sec:sfr}) or MMU cache policy (see
+Section~\ref{sec:memory-management-unit}) and PS.USE = 0 , then it is considered
+as ``blocking'': the core will stop executing until it receives the answer of
+the memory system for that store: this allows to generate precise exceptions in
+case of memory bus error and thus ease the debug of (e.g.) code accessing
+devices.
+
+In all other circumstances (misaligned or cached store or PS.USE = 1), stores
+are ``posted'': the core does not wait for their answer and can continue
+executing, including submission of new LSU requests to the data cache.
+
+When data to be loaded by the core are not in the cache (load miss), they are
+fetched from memory and copied into the cache (line allocation). During this
+time the core will stall if it tries to process an instruction that has a data
+dependency on the loaded data or if it tries to access the data cache again
+(hit-under-miss is not supported). As for the stores, an aligned uncached load
+with PS.USE = 0 will be considered as blocking.
+
+If executing an load instruction with uncached modifier, or if PS.DCE = 0, or if
+the address of a data access falls in a device or uncached memory area (be it
+the default device memory map when the MMU is off or a device/uncached page with
+MMU on), then the access is considered as uncached: it is simply forwarded to the
+memory and, if applicable, the response is forwarded to the core, leaving the
+cache contents unchanged.
+
+
+%\subsubsection{Speculative Memory Accesses}
+
+%The \KalrayK core assists compilers in extracting
+%instruction-level parallelism by supporting software speculation of some memory
+%accesses. Software speculation refers to the execution of an instruction under
+%a more general condition than specified in the original, unoptimized program,
+%such as moving memory loads moved up above conditional branches. On the
+%\KalrayK core, the following rules apply to memory accesses
+%that are neither synchronizing nor volatile: \begin{itemize}
+
+%\item No load or store generate a hardware trap whenever the effective address
+%is misaligned in memory. Rather, the corresponding address bits are either
+%ignored, or the misaligned access is executed, depending on the particular
+%instruction.
+
+%\item No load generate a hardware trap whenever the effective address is
+%outside a valid area. Rather, loads return zero, and stores have no effect.
+%Validity of an effective address is computed by a MMU.
+
+%\end{itemize}
+
+%\subsection{Coupled Cores Execution}
+
+%In order to achieve high-performance on tight computation kernels, a number of
+%cores (between 2 and 4) can be coupled and behave as a single processing
+%unit. This coupling of cores is supported by the ability for each core
+%to perform direct remote register writes in the register file of its neighbors
+%in a hypercube communication scheme.
+
+%Precisely, the remote register writes are allowed on the ALU and the MAU units
+%for all instructions that have a 64-bit source and a 64-bit target. For
+%these instructions, 64 remote target register pairs can be specified, which
+%are mapped to the 16 upper register pairs of the four neighbors of a given
+%core.
+
+%These remote writes are not synchronized, so synchronization must be enforced by
+%other means, for instance by notifying and by waiting for events. It is expected
+%that the latency of a remote write is one cycle longer than the latency of a
+%load that hits the data cache.
+
+%In the coupled cores execution mode, each core executes its own
+%program, typically a hardware loop. So it is only by software convention that
+%several cores are coupled for executing a given piece of code.
+
+%\end{document}
+

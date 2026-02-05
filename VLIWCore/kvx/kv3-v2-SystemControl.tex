@@ -1,0 +1,317 @@
+\section{System Control} \label{sec:system}
+
+This chapter gives an overview of the core system control, including privilege
+level transitions, and idle modes management.
+
+\subsection{Privilege Level Transitions} \label{sec:transitions}
+
+When an exception fires (respectively when a RFE instruction is executed), in
+addition to other actions, PS is saved to (respectively restored from)
+SPS\_PL$<j>$, where $<j>$ is the destination level (respectively the origin
+level) of the exception (respectively RFE). This allows exception
+nesting across different PLs without loss of context. The case $j = i$ allows
+to define what is called ``horizontal exceptions'' (respectively ``horizontal RFE'') by
+contrast to the classic ``vertical exceptions'' (respectively ``vertical RFE'').
+
+One motivation for the horizontal exceptions/RFE is the implementation of
+user-level interrupts, through the use of individual interrupts ownership
+defined in ITO.
+
+Four categories of exceptions are defined: interrupts, hardware traps, system
+calls and debug. They are reported differently in ES\_pl$<j>$ and branch to
+different addresses, all based on EV\_PL$<j>$, where $<j>$ is the exception
+destination level.
+
+When one of these exception fires, the execution is rerouted to the destination
+level $<j>$ (defined by the resource ownership, see Section~\ref{sec:ownership})
+of the exception, and the following actions are taken automatically and
+atomically by hardware: \begin{itemize}
+
+\item PS $\leftarrow$ SPS\_PL$<j>$ except for the PL field and the FOE0/1
+bits\footnote{FOE0/1 means Forced on Exception to 0 or 1, such as PS.IE and PS.ET.}
+set by hardware\footnote{This allows to (partly) restore a remnant
+state of a destination level when entering it (e.g. caches enabled in OS
+independently from the setting in User, or 32/64-bit modes set differently). To
+avoid unnecessary software manipulations, this partial restoration is not
+performed in case $<i> = <j>$ (horizontal exception).}.
+
+\item SPS\_PL$<j>$ $\leftarrow$ PS (atomic with the preceding step, this is really a swap).
+
+\item PC $\leftarrow$ handler PC based on EV\_PL$<j>$ (see Section~\ref{sec:exception_vector}).
+
+\item SPC\_PL$<j>$ $\leftarrow$ PC (atomic with the preceding step, this is really a swap).
+ 
+\item ES\_PL$<j>$ $\leftarrow$ filled with relevant information by hardware.
+
+\item EA\_PL$<j>$ $\leftarrow$ filled with the exception address, as usual.
+
+\end{itemize}
+The PC saved in SPC is the PC of the first non-executed bundle before the
+exception is taken. In case of system call and interrupt, this is the PC of the
+logical successor of the bundle executing while exception was accepted. In case of
+hardware trap and debug exceptions, this is the PC of the bundle that raised the
+exception.
+
+When a RFE instruction is executed from PL$<i>$, the following actions are
+taken automatically and atomically by hardware: \begin{itemize}
+
+\item PS $\leftarrow$ SPS\_PL$<i>$.
+
+\item SPS\_PL$<i>$ $\leftarrow$ PS except for the FOE0/1 bits, SPS\_PL$<i>$.IL
+and SPS\_PL$<i>$.PL fields that are left unchanged (back-up of the remnant state of
+PL$<i>$, atomic with the preceding step, this is really a
+swap)\footnote{Similarly to exception taking, this is not performed for horizontal RFE.}.
+
+\item PC $\leftarrow$ SPC\_PL$<i>$.
+
+\end{itemize}
+
+For some hardware traps and debug exceptions, resuming execution should be at the
+bundle that logically follows the one that triggered the exception, instead of
+the trapping bundle itself. This is achieved by explicitly increasing the SPC
+saved by exception taking by the size of the trapping bundle, before executing
+RFE. To support this idiom, instructions that may raise a PRIVILEGE trap (SET,
+WFX*, RSWAP, TLB*) have a bundling constraint that ensures that they are alone in
+their bundle, so the size of their bundle is always 4.
+
+\subsection{Privilege Level Ownership} \label{sec:ownership}
+
+Owner PLs are defined for various resources of the processor: instructions,
+SFRs or their bit-fields, and exceptions. After reset, PL0 is the owner of all
+the resources of the processor. The ownership of each owner-controllable
+resource is defined in one of the six SFRs: SYO, HTO, ITO, DO, MO PSO.
+When a PL owns a resource/mechanism, it means that: \begin{itemize}
+
+\item the owner PL and more privileged PLs can use/read/modify the resource (if applicable);
+
+\item less privileged PLs cannot use/read/modify the resource and if trying they will: \begin{itemize}
+
+  \item trap (PRIVILEGE) to the owner PL if trying to do a SFR write (SET,
+WFX*, RSWAP, TLB*) on a SFR or SFR field belonging to a more privileged PL. 
+
+  \item read zeroes (RAZ) in the relevant fields (non owned fields) if trying to
+read a SFR (GET, IGET), except for: \begin{itemize}
+
+    \item PCR: read-only for all non privileged PLs (PLs that are less privileged than the owner of PCR).
+
+    \item PS: all fields are read-only for non privileged PLs, even ones not owned by the current PL in PSO.
+
+    \item SPS\_PL$<j>$: all fields are read-only for PL$<i>$, with $i \le j$, even ones not owned by PL$<i>$ in PSO.
+
+    \item SYO, HTO, ITO, DO, MO and PSO: read-only for all non privileged PLs.
+
+    \end{itemize}
+
+  \item trap (PRIVILEGE) to the owner PL if trying to execute an instruction belonging to a more privileged PL.
+
+  \end{itemize}
+
+\end{itemize}
+
+In case of simultaneous OPCODE and PRIVILEGE traps (because the
+targeted SFR/SFR field cannot be accessed with the instruction used and it
+belongs to a more privileged PL), the OPCODE trap is taken (e.g. if PL$<i>$
+tries to execute WFXL on EA\_PL$<j>$ with $i > j$).
+
+For the exceptions, the notion of ownership (specified by SYO/HTO/IT/DO)
+means that, when the core is executing in PL$<i>$ and encounters an exception
+that belongs to PL$<j>$, then: \begin{itemize}
+
+\item if $j \le i$ (owner more privileged or equal to current PL, normal case),
+it will take that exception to PL$<j>$;
+
+\item else ($j > i$, owner less privileged than current PL, pathological case),
+it will take that exception to PL$<i>$ (itself).
+
+\end{itemize}
+
+
+\subsection{Privilege Level Manipulations} \label{sec:manipulations}
+
+When setting an ownership, the value used by the WFX*/SET instruction will
+always be relative to the PL currently executing. This means that writing 0
+signifies 'myself (+0), the current PL', 1 really means 'myself + 1', and so on
+until +3. So, for example, if the processor is running in PL1 and writes 2 to
+an owner field (e.g. SYOW.QO), it means: 'assign ownership of Q0 to PL3'.
+
+When reading from ownership registers, the value returned by the HW will be
+absolute, e.g. 2 means PL2, whatever the current PL.
+
+To help distinguish the two, aliases have been defined for the SYO, HTO, ITO,
+DO, MO PSO (called *O SFRs) by appending 'W' to their name (called *OW SFRs).
+The *O SFRs SFRs will always be used for reads (GET, IGET) and return an
+absolute encoding of owner PLs, while *OW SFRs will be used for writes (SET,
+WFX*).  The *O SFRs are read-only for all levels and the *OW SFRs are WFX-able
+field by field for the owner of the fields (and cannot be read). RSWAP is
+forbidden and will always trap OPCODE if tried on a *O or *OW SFR as it is
+considered as a read and a write.
+
+This aliasing of *O SFRs answers the needs to: \begin{itemize}
+
+\item know if we are the owner of a resource or it is owned by a
+more privileged PL than us. This is made possible by reading *O and comparing
+it with PS.PL;
+
+\item delegate ownership of a resource to less privileged PL.
+Doing so in a relative way: \begin{itemize}
+
+  \item Gives a more robust and intuitive way to manipulate permissions:
+cannot try to delegate to a more privileged PL.
+
+  \item Eases the porting of a given software layer (e.g. an OS) to a different PL
+than that for which it was originally written (opening the door to dynamic
+level relocation).
+
+  \end{itemize}
+
+\end{itemize}
+
+As explained above, relative PLs are used when writing to *O ownership SFRs
+through their *OW aliases. They are also used when writing to the PS.PL field
+(but not reading; reading PS.PL will output an absolute PL value).
+
+The WFX* instructions targeting relative PL fields in the SFRs mentioned above
+use the following semantics:
+
+\begin{tabular}{|l|l|l|} \hline
+Write Mask & Read Mask & Effect \\ \hline
+00 & 00 & None \\
+00 & 01 & +0 \\
+00 & 10 & +0 \\
+00 & 11 & +0 \\
+01 & xx & +1 \\
+10 & xx & +2 \\
+11 & xx & +3 \\
+\hline \end{tabular}
+
+So, for example, the following code sequence:
+\begin{verbatim}
+    make $r0 = 0x0000000100000300
+    ;;
+    wfxl $itow = $r0
+    ;;
+\end{verbatim}
+
+This attempts to attribute ownership (current level) +1 to IT0, and self
+ownership (+0 = current level) to IT4, leaving the other IT ownership's
+untouched. That may in turn trigger a privilege or PL overflow trap (explained
+below), depending on the current value of ITO and the current PL.
+
+When software writes a relative PL value to *OW or PS.PL, it may be subject to
+'PL Overflow'. This is a hardware trap (whose owner is itself defined in HTO)
+that will fire if the sum of the current PL and the relative PL value it tries
+to write exceeds 3, as the hardware is in the incapacity of turning the
+relative information into a valid absolute one. For example, if PL1 is the
+owner of ITO.IT\_12 and it tries to delegate it to PL +3 (by writing 3 in
+ITOW.it\_12) then, the write will not be made and the PLO trap will fire
+(unless, of course, if PL1 was not the owner (or more privileged) of IT\_12 to
+start with, in which case, its write attempt is not even examined and the
+PRIVILEGE trap is raised).
+
+In SPS*.PL, the PL value is stored under its relative form. When populated by
+the hardware upon exception entry, it means 'this is the PL I took the
+exception in, relative to the target PL'. As a result, when a trap handler
+(e.g.) executing in PL$<i>$ reads SPS, it can know where the exception
+originated from: $<i>$ (= itself, meaning horizontal exception) if SPS.PL = 0,
+$<i+1>$ if SPS.PL = 1, etc. The relative aspect of the information is not
+dynamic, it is built once and for all when SPS.PL is updated (be it by the
+hardware or by a SET/WFX*). Consequently, reading (e.g.) SPS\_PL2.PL as '01'
+while executing in PL0 means PL2 + 1 = PL3, and not PL1.
+
+When writing to SPS*.PL, the hardware does not apply any particular rules to
+build the new value (contrary to those explained above for *OW fields). In case
+of WFX*, it simply applies the clear/set masks to the former value, as it does
+for any regular SFR field. It is acceptable for the software to write a relative value
+that may lead to PL overflow. As the check will only be made by the HW when RFE
+is executed. It is at this point that the relative information stored into
+SPS*.PL will be turned into an absolute one in PS.PL, doing PS.PL = current\_PL
++ SPS*.PL.
+
+The general rule is that the hardware enforces PL overflow check only at the
+time a relative PL information is turned into an absolute one.  This happens
+when: \begin{itemize}
+
+\item Writing to *O registers through their *OW aliases, as ownerships live in absolute mode in the real *O registers.
+
+\item Writing to PS.PL, as the real PS.PL register contains an absolute PL.
+
+\item Executing RFE, as the real PS.PL register contains an absolute PL.
+
+\end{itemize}
+
+The only places where a relative PL can be found in a permanent way (that is,
+really stored in the hardware, not just used as a way to convey information
+during the execution of a SET/WFX*) are SPS*.PL and ES.*RPL.
+
+\subsection{Idle Modes and Transitions} \label{sec:idle-modes}
+
+The core offers three different idle modes where it stops executing, waiting for 
+some conditions to resume execution.
+They are named after the instructions that are used to enter them:
+AWAIT, SLEEP and STOP (formerly known as, respectively, IDLE0, IDLE1 and IDLE2).
+
+These three idle modes all save power by gating the main CPU clocks.
+They differ by the conditions upon which they are entered/left by the core, and by their sensitivity 
+to the reset\_on\_wakeup cluster power controller bit.
+
+The entry/exit in/from each mode is controlled by an associated bit in the Wakeup Status SFR (WS).
+Precisely, \textbf{AWAIT mode} is entered by the core when it executes the AWAIT instruction
+and WS.WU0 = 0. Executing AWAIT with WS.WU0 = 1 is equivalent to a NOP (no stall happens).
+
+When in AWAIT idle mode, the core will wake-up and resume execution as soon as WS.WU0 rises.
+WS.WU0 is automatically set to 1 by hardware when one of the following conditions happens: \begin{itemize}
+\item A PE2PE event comes in
+\item Any new interrupt comes in (rising edge), including interrupts that can not fire immediately because they
+are individually disabled, or their level is less or equal to PS.IL, or interrupts are globally
+disabled (PS.IE = 0)
+\item The core receives a wake-up signal from the cluster power controller or the DSU.
+\end{itemize}
+If woken up from AWAIT by en eligible interrupt, the core will take it straight away, setting SPC to the bundle
+following the AWAIT instruction. Otherwise, a core woken up from AWAIT will simply resume execution at the bundle
+following the AWAIT instruction.
+
+Similarly, \textbf{SLEEP mode} is entered by the core when it executes the SLEEP instruction
+and WS.WU1 = 0. Executing SLEEP with WS.WU1 = 1 is equivalent to a NOP (no stall happens).
+
+When in SLEEP idle mode, the core will wake-up and resume execution as soon as WS.WU1 rises.
+WS.WU1 is automatically set to 1 by hardware when one of the following conditions happens: \begin{itemize}
+\item A new eligible interrupt comes in.
+\item The core receives a wake-up signal from the cluster power controller or the DSU.
+\end{itemize}
+If woken up from SLEEP by en eligible interrupt, the core will take it straight away, setting SPC to the bundle
+following the SLEEP instruction. Otherwise, a core woken up from SLEEP will simply resume execution at the bundle
+following the SLEEP instruction.
+
+Finally,  \textbf{STOP mode} is entered by the core when it executes the STOP instruction
+and WS.WU2 = 0. Executing STOP with WS.WU2 = 1 is equivalent to a NOP (no stall happens).
+When in STOP idle mode, the core will wake-up and resume execution as soon as WS.WU2 rises.
+WS.WU2 is automatically set to 1 by hardware when the core receives a wake-up signal from the cluster
+ power controller or the DSU.
+When woken up from STOP by such a signal, the core will: \begin{itemize}
+\item hardware reset itself and reboot from RESET\_PC if the corresponding reset\_on\_wakeup bit of the 
+cluster power controller is set
+\item resume execution at the bundle following the STOP instruction otherwise
+\end{itemize}
+STOP is the only idle mode that is sensitive to reset\_on\_wakeup, AWAIT and SLEEP always ignoring it 
+(acting as if it were 0).
+
+Events and interrupts received during any idle mode are always registered in EV4 and ILR SFRs,
+whether they wake the core up or not.
+Similarly, WS.WU* bits are raised by the events detailed above and registered,
+whether they wake the core up or not.
+
+When software wishes to enter an idle mode to save power while waiting for certain conditions, it is recommended to follow 
+the sequence below: \begin{enumerate}
+\item First blindly clear the relevant WS.WU* bit.
+\item Then check the appropriate software structures/conditions indicating whether there are tasks to perform.
+\item If yes, treat them and then go back to (1).
+\item Else, execute the needed AWAIT, SLEEP, STOP instruction.
+\end{enumerate}
+
+In that way, if there is a race between step (2) and a new event/interrupt
+signaling that there is work to be done, the core will either go through those
+idle modes as a NOP, or be woken up quickly after entering it.  This avoids
+scenarios where an idle mode is entered and the core never wakes up because the
+wake-up event was cleared by mistake before.
+
+

@@ -1,0 +1,290 @@
+\section{Instruction Set Description}
+
+\subsection{Instruction Syntax}
+
+The instruction mnemonics are composed of a main part that indicates the sequence
+of operations, followed by an optional prefix that specifies the data type
+if it is not an integer word. Immediate operands always appear last in
+instruction syntax, except for memory instructions where the offset is located
+on the left of the base register.  For instance:
+
+{\small
+\begin{lstlisting}
+addd    $r1 = $r2, $r3      // Integer add of $r2 and $r3 into $r1.
+addd    $r1 = $r2, 127      // Integer add of $r2 and 127 into $r1.
+addds   $r1 = $r2, $r3      // Saturated add of $r2 and $r3 into $r1.
+lbs     $r1 = 127[$r2]      // Load byte sign-extended from $r2+127.
+sd      127[$r2] = $p4      // Store double word $p4 into $r2+127.
+\end{lstlisting}
+}
+
+Most instruction operands are either register or immediate values. The \KalrayK
+core also uses \emph{modifier} operands, which have an alphanumeric name and
+start by a '.' character. These modifiers always follow the instruction mnemonic
+in the instruction syntax:
+
+{\small
+\begin{lstlisting}
+cb.dnez   $r1, label        // Branch to label if $r1 is not zero.
+lwz.xs $r1 = $r2[$r3]       // Load word zero extend at $r3 + ($r2 * 4).
+\end{lstlisting}
+}
+
+\subsection{Instruction Bundle Encoding} \label{sec:encoding}
+
+\subsubsection{Structure of Instruction Bundles}
+
+Instruction bundle encoding of the \KalrayK core follows a simple pattern. An
+instruction bundle is composed of up to 8 syllables (32-bit words), whose bit 31
+(denoted as \texttt{parallel} or \texttt{P}) is dedicated to encode the end of
+the bundle (end of bundle when zero). All syllables also dedicate bits 29 and 30
+to encode the \emph{steering} information: \begin{description} \item[0b00] BCU
+instruction syllables or immediate extension syllable.  \item[0b01] LSU
+instruction syllable.  \item[0b10] MAU or FPU instruction syllable.  \item[0b11]
+ALU0 or ALU1 instruction syllable.  \end{description}
+
+An instruction bundle is encoded with the instruction syllables first, followed
+by the immediate extension syllables if any. The instruction
+syllables in a bundle are ordered: \begin{itemize}
+\item Instruction syllable that must issue on the BCU.
+\item Instruction syllable that must issue on the TCA.
+\item Instruction syllables that must issue on the ALU0, or both ALU0 and ALU1.
+\item Instruction syllables that may issue on the ALU0, the ALU1, or the tiny ALUs.
+\item Instruction syllable that must issue on the MAU or the FPU.
+\item Instruction syllable that must issue on the LSU.
+\end{itemize}
+
+\subsubsection{Immediate Extensions in Instruction Bundles}
+
+The immediate extension syllables must appear after all the instruction
+syllables.  In the immediate extension syllables, the steering bits are 0b00,
+while the \texttt{exnum} field in bits 27 and 28 encodes which execution unit
+should make use of the immediate extension:
+\begin{description}
+\item[0b00] Immediate extension for the instruction syllable issued on the ALU0.
+\item[0b01] Immediate extension for the instruction syllable issued on the ALU1.
+\item[0b10] Immediate extension for the instruction syllable issued on the MAU or the FPU.
+\item[0b11] Immediate extension for the instruction syllable issued on the LSU.
+\end{description}
+
+Excess immediate extension syllables for a particular instruction syllable are
+ignored. Immediate extension syllables for instruction syllables without
+immediate operand are also ignored. This feature can be exploited to pad bundles
+for the alignment of subsequent instruction bundles, as long as the total number
+of syllables does not exceed 8:
+\begin{itemize}
+\item If there is no ALU instruction, pad the end of bundle with the NOP
+syllable (0x00000000).
+\item If there is an ALU0 or double ALU instruction without immediate operand, pad the
+end of bundle with the NOP syllable.
+\item If there is an ALU0 or double ALU instruction with and extended immediate operand,
+pad the end of bundle with the NOP syllable.
+\item If there is an ALU0 or double ALU instruction with non-extended immediate
+operand, pad the end of bundle with an immediate extension syllable that
+sign-extends the original immediate operand.
+\end{itemize} Indeed, the NOP syllable is interpreted as an ALU0 immediate extension.
+
+\subsection{Instruction Execution}
+
+The execution of instructions is described using a pseudo-C language. This
+language retains the C syntax, however, it operates on bool(eans) and int(egers)
+of unbounded size. The pseudo-C builtin functions are listed in
+Table~\ref{table:pseudoc-builtins}. The core stateful resources are listed in
+Table~\ref{table:pseudoc-symbols}, including the register files that behave like
+arrays, and a memory interface MEM that implement the methods listed in
+Table~\ref{table:memory-interface}. Finally, the core-specific functions
+are listed in Table~\ref{table:pseudoc-externals}.
+
+\begin{table}[ht]
+\begin{center}
+\begin{tabular}{|l|l|} \hline
+Identifier & Description \\ \hline
+\_ABS & Absolute value \\
+\_BMM\_$n$ & Bit Matrix Multiply $n\times n$ \\
+\_BMT\_$n$ & Bit Matrix Transpose $n\times n$ \\
+\_CBS.$n$ & Count bit set on $n$ bits \\
+\_CLS.$n$ & Count leading sign on $n$ bits \\
+\_CLZ.$n$ & Count leading zero on $n$ bits \\
+\_CTZ.$n$ & Count trailing zero on $n$ bits \\
+\_MAX & Maximum \\
+\_MIN & Minimum \\
+\_ROL\_$n$ & Rotate Left modulo $n$ bits \\
+\_ROR\_$n$ & Rotate Right modulo $n$ bits \\
+\_SAT.$n$ & Saturation to $n$ bits \\
+\_SWAP\_$n$ & Swap the pairs of $n$ bits slices \\
+\_SX\_$n$ & Sign extension on $n$ bits \\
+\_THROW & Throw hardware trap \\
+\_ZX\_$n$ & Zero extension on $n$ bits \\
+\hline \end{tabular}
+\end{center}
+\caption{Pseudo-C builtin functions.}
+\label{table:pseudoc-builtins}
+\end{table}
+
+\begin{table}[ht]
+\begin{center}
+\begin{tabular}{|l|l|} \hline
+Identifier & Description \\ \hline
+.cas & Memory compare and swap \\
+.dflush & Memory data cache flush \\
+.dflushl & Memory data cache flush line \\
+.dinval & Memory data cache invalidate \\
+.dinvall & Memory data cache invalidate line \\
+.dpurge & Memory data cache purge \\
+.dpurgel & Memory data cache purge line \\
+.dtouchl & Memory data cache touch line \\
+.dzerol & Memory data cache zero line \\
+.fence & Memory fence \\
+.iinval & Memory instruction cache invalidate \\
+.iinvall & Memory instruction cache invalidate line \\
+.dtouchl & Memory instruction cache touch line \\
+.load & Memory load \\
+.loadd & Memory load double \\
+.loadu & Memory load unsigned \\
+.loadud & Memory load unsigned double \\
+.store & Memory store \\
+.storeu & Memory store uncached \\
+.wflush & Memory flush write buffer \\
+\hline \end{tabular}
+\end{center}
+\caption{Memory interface methods.}
+\label{table:memory-interface}
+\end{table}
+
+\begin{table}[ht]
+\begin{center}
+\begin{tabular}{|l|l|} \hline
+Identifier & Description \\ \hline
+SFR[] & System Function Registers \\
+GPR[] & General Purpose Registers \\
+PGR[] & Paired General Registers \\
+QGR[] & Quadrupled General Registers \\
+XCR[] & Extension Compute Registers \\
+XBR[] & Extension Block Registers \\
+XVR[] & Extension Vector Registers \\
+XTR[] & Extension Tile Registers \\
+XMR[] & Extension Matrix Registers \\
+MEM & Memory interface name \\
+\hline \end{tabular}
+\end{center}
+\caption{Pseudo-C symbols.}
+\label{table:pseudoc-symbols}
+\end{table}
+
+\begin{table}[ht]
+\begin{center}
+\begin{tabular}{|l|l|} \hline
+Identifier & Description \\ \hline
+bwlu\_$n$ & Bit-wise look-up on $n$ bits \\
+comparison\_$n$ & Comparison on $n$ bits \\
+condition\_$n$ & Condition test on $n$ bits \\
+fabs\_$n$ & Floating point absolute value on $n$ bits \\
+fadd\_$n$\_$n$ & Floating point add on $n$ bits \\
+fdma\_$n$\_$m$ & Floating point multiply add on $n$ bits, result on $m$ bits \\
+fdms\_$n$\_$m$ & Floating point multiply subtract on $n$ bits, result on $m$ bits \\
+ffma\_$n$\_$m$ & Floating point fuse multiply add on $n$ bits, result on $m$ bits \\
+ffman\_$n$\_$m$ & Floating point fuse multiply add negate on $n$ bits, result on $m$ bits \\
+ffms\_$n$\_$m$ & Floating point fuse multiply subtract on $n$ bits, result on $m$ bits \\
+ffmsn\_$n$\_$m$ & Floating point fuse multiply subtract negate on $n$ bits, result on $m$ bits \\
+fixed\_$n$ & Floating point conversion to fixed point on $n$ bits \\
+fixedu\_$n$ & Floating point conversion to unsigned fixed point on $n$ bits \\
+float\_$n$ & Fixed point conversion to floating point on $n$ bits \\
+floatu\_$n$ & Unsigned fixed point conversion to floating point on $n$ bits \\
+floatcomp\_$n$ & Floating point compare on $n$ bits \\
+fmax\_$n$ & Floating point maximum on $n$ bits \\
+fmin\_$n$ & Floating point minimum on $n$ bits \\
+fmul\_$n$\_$m$ & Floating point multiply on $n$ bits, result on $m$ bits \\
+fmuln\_$n$\_$m$ & Floating point multiply negate on $n$ bits, result on $m$ bits \\
+fnarrow\_$n$\_$m$ & Floating point narrow from $n$ bits to $m$ bits \\
+fneg\_$n$ & Floating point negate on $n$ bits \\
+fsbf\_$n$\_$m$ & Floating point subtract $n$ bits, result on $m$ bits \\
+fsdiv\_$n$ & Floating point seed for division on $n$ bits \\
+fsisr\_$n$ & Floating point seed for inverse square root on $n$ bits \\
+fwiden\_32\_64 & Floating point widen single to double \\
+\hline \end{tabular}
+\end{center}
+\caption{Pseudo-C external functions.}
+\label{table:pseudoc-externals}
+\end{table}
+
+\clearpage
+
+\newpage
+%\ifx\flodraft\undefined
+  \input{Instruction}
+%\fi
+
+\subsection{Synthetic Instructions}
+
+Synthetic instructions are special cases of regular instructions, where one or
+more operands are forced to constant values.
+
+\newpage
+\ifx\flodraft\undefined
+  \input{Synthetic}
+\fi
+
+
+\subsection{Format Descriptions}
+
+\ifx\flodraft\undefined
+  \input{Format}
+\fi
+
+
+\subsection{Instruction Encoding Tables}
+
+\paragraph{Note} Instructions whose name are suffixed with '*' are those which
+are not yet described in this document or implemented in the software tools
+(instruction set simulators, assembler). Moreover, we use the following
+shortcuts in the table:
+
+\begin{center}
+\begin{tabular}{r@{\hskip 5mm$\leftrightarrow$\hskip 5mm}l}
+  Abbreviation & Interpretation \\
+  \hline
+  b\_7\_5 & bits\_7\_5\\
+  b\_9\_8 & bits\_9\_8\\
+  comp    &    comparison\\
+  cond & condition\\
+  fcomp & floatcomp\\
+  N    &    negate\\
+  P    &    parallel\\
+%  reg\{X,Y,\ldots\}    &    register\{X,Y,\ldots\}\\
+  rnd & rounding\\
+  scal & scaling\\
+\end{tabular}
+\end{center}
+
+\begin{center}
+  \input{Opcode}
+\end{center}
+
+
+\subsection{Instruction Reservation Tables}
+
+\input{Resource}
+
+The instruction scheduling constraints of the \KalrayK core with regards to
+execution resources are exactly represented by \emph{reservation tables}. A
+reservation table has one row per core execution resource, and one column
+per execution cycle relative to the instruction issue date. Each entry in a
+reservation table records the amount of execution resource required. Parallel
+and pipelined instruction execution is allowed as long as the sum of required
+execution resources in all the instruction reservation tables does not exceed
+the execution resources available in the core, see
+Table~\ref{table:resources}.
+
+\input{Reservation}
+
+\newpage
+\subsection{Instruction Constraints} \label{sec:constraints}
+
+The \KalrayK core bundling constraints are implied by the instruction
+scheduling constraints on dependence latencies and execution resources. In
+particular, a bundle is valid if the sum of the first column of each reservation
+table of the bundled instructions does not exceed the availability of execution
+resources given in Table~\ref{table:resources}.
+
+\input{kv3-Constraints}
+

@@ -1,0 +1,120 @@
+\PassOptionsToPackage{hyperref}{hyperindex}
+\documentclass[nda]{trkalray}
+%\documentclass[colorlinks]{trkalray}
+\usepackage{xspace}
+
+%\PassOptionsToPackage{table}{xcolor}
+\usepackage{graphicx}
+\graphicspath{{images/}}
+
+\IfFileExists{slashbox.sty}{\usepackage{slashbox}}{\usepackage{diagbox}}
+%\usepackage{lscape}  % for landscape operation codes
+\usepackage{pdflscape}  % for landscape operation codes + rotate pages in pdf (but still ok to print)
+%\usepackage{srcltx}  % source reversal
+\usepackage{colortbl}% for colors in tables
+\usepackage{hhline}  % for lines in tables
+\usepackage{multirow}
+\usepackage{bitfields}
+
+\usepackage{multicol}
+\usepackage{tabularx}
+
+%\usepackage[hyperindex]{hyperref}
+\usepackage{makeidx}
+\makeindex
+%\newindex{default}{idx}{ind}{Instruction index}
+
+\ifx\onlyinput\undefined\else
+  \let\oldinput=\input
+  \def\input#1{{
+    \def\x{#1}
+    \ifx\x\onlyinput\oldinput{#1}
+    \fi
+    }}
+  \overfullrule=5pt
+\fi
+
+\newcommand{\KalrayK}{{Kalray kv3}\space}
+
+\setcounter{tocdepth}{3}
+
+\version{KETD-62}{W25}{2019}
+
+\title{Kalray kv3 V1 VLIW Core Architecture Manual}
+\titlelabel{KalrayKv3VLIWCoreArchitectureManual}
+
+\docowner{Beno\^{\i}t Dupont de Dinechin}{benoit.dinechin@kalray.eu}
+
+\author{%
+Kalray S.A.\autref{1}
+}
+\institute{%
+\autlabel{1} \email{info@kalray.eu},
+Kalray S.A.
+}
+
+\abstract{Instruction Set Architecture, Micro-Architecture, and Application
+Binary Interface, of the \KalrayK core.}
+
+\keywords{%
+VLIW, DSP, ABI
+}
+
+\newcommand{\clusterdoc}{\emph{\MPPA{} Cluster Architecture}\space}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+
+\newpage
+\input{kv3-CoreOverview}
+
+\newpage
+\input{kv3-v1-ArchitecturalState}
+
+\newpage
+\input{kv3-v1-SystemControl}
+
+\newpage
+\input{kv3-v1-MemoryManagementUnit}
+
+\newpage
+\input{kv3-v1-IntegratedPeripherals}
+
+\newpage
+\input{kvx-InstructionSetDescription}
+
+\newpage
+\input{kvx-ApplicationBinaryInterface}
+
+\newpage
+\input{kvx-ApplicationOptimizationGuide}
+
+\bibliographystyle{plain}
+\bibliography{Biblio}
+
+%% Redefining index to be on three columns
+\makeatletter
+\renewenvironment{theindex}{
+                \clearpage
+                \begin{multicols}{3}[\section*{\indexname}]%
+                \@mkboth{\MakeUppercase\indexname}%
+                        {\MakeUppercase\indexname}%
+                \thispagestyle{plain}\parindent\z@
+                \parskip\z@ \@plus .3\p@\relax
+                \columnseprule \z@
+                \columnsep 35\p@
+                \let\item\@idxitem}
+                {\end{multicols}\clearpage}
+\makeatother
+
+%% Get more space between columns
+\setlength{\columnsep}{40pt}%
+%% Change name of index
+\renewcommand\indexname{Instruction index}
+\printindex
+
+\end{document}
+
+

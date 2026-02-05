@@ -1,0 +1,111 @@
+\PassOptionsToPackage{svgnames, table}{xcolor}  % cant use this because xcolor makes a mess of \hline \hline in long tables, removing the doublerulesep !!!
+\PassOptionsToPackage{svgnames}{xcolor}
+\documentclass{trkalray}
+\usepackage{epsfig}
+\usepackage{xspace}
+\usepackage{listings}
+\usepackage{comment}
+\usepackage{bitfields}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{pdflscape}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage[normalem]{ulem} % for strikethrough (\sout{})
+
+\renewcommand{\arraystretch}{1.12}
+
+\newcommand{\KalrayK}{{Kalray kv3}\xspace}
+\newcommand{\KCore}{{kv3 VLIW core}\xspace}
+\newcommand{\KArchitecture}{\emph{\KalrayK VLIW Core Architecture Reference Manual}\xspace}
+
+\version{}{W10}{2016}
+
+\lstset{language={},
+  basicstyle=\scriptsize\tt
+}
+
+\title{Kalray kv3 V1 VLIW Core Optimization Guide}
+\titlelabel{KalrayKv3VLIWCoreOptimizationGuide}
+
+\docowner{Beno\^{\i}t Dupont de Dinechin}{benoit.dinechin@kalray.eu}
+
+\author{%
+Kalray S.A.\autref{1}
+}
+\institute{%
+\autlabel{1} \email{info@kalray.eu}
+}
+
+\abstract{ This document provides some details of the \MPPA architecture, primarily addressed to assembly language programmers and compiler writers }
+
+\keywords{ }
+
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{3}
+
+\hypersetup{
+backref=true,
+pagebackref=true,
+hyperindex=true,
+colorlinks=true,
+breaklinks=true,
+urlcolor= blue,
+linkcolor= blue,
+bookmarks=true,
+bookmarksopen=true,
+pdftitle={Kv3 VLIW Core Optimization Guide},
+pdfauthor={Vincent Ray, Beno\^{\i}t Dinechin},
+pdfsubject={assembly-level optimization guide}
+}
+
+% read operand simple format
+\newcommand{\rsf}[1]{\textcolor{RoyalBlue}{#1}}
+% read operand double format
+\newcommand{\rdf}[1]{\textcolor{Blue}{#1}}
+% write operand simple format
+\newcommand{\wsf}[1]{\textcolor{FireBrick}{#1}}
+% write operand double format
+\newcommand{\wdf}[1]{\textcolor{Red}{#1}}
+% write back simple format
+\newcommand{\wbsf}[1]{\textcolor{SeaGreen}{#1}}
+% write back double format
+\newcommand{\wbdf}[1]{\textcolor{LimeGreen}{#1}}
+
+% color backgroung of row
+%\newcommand{\crb}{\rowcolor{Seashell}}  % cant use this because xcolor makes a mess of \hline \hline in long tables, removing the doublerulesep !!!
+\newcommand{\crb}{}
+
+% make a centered column of the desired fixed width
+\newcolumntype{P}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
+
+
+\renewcommand{\labelitemi}{$\bullet$}
+\renewcommand{\labelitemii}{$\diamond$}
+\renewcommand{\labelitemiii}{$\cdot$}
+\renewcommand{\labelitemiv}{$\ast$}
+
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+
+\newpage
+\input{kv3-Optimization-content}
+
+
+\newpage
+\section{Instruction Constraints}
+\label{sec:constraints}
+
+\input{kv3-Constraints}
+
+\setlength{\doublerulesep}{0.25cm}
+
+\include{Stages}
+
+
+\end{document}
+

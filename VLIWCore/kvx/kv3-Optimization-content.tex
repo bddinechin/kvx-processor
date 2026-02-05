@@ -1,0 +1,1137 @@
+\section{Introduction}
+
+This document details the Kalray \KCore pipeline implementation.  The
+information concerns the \KalrayK hardware implementation of the application
+cores (PE) and management core (RM) of the compute clusters in the Kalray
+\MPPA-80 Coolidge processor.
+
+It should be considered as an addendum to the \KArchitecture and is primarily
+addressed to assembly language programmers and compiler writers. As such, it
+contains detailed instruction scheduling information, as well as explanations
+about some particularities/irregularities of the \KCore implementation and how to
+exploit/work-around them.
+
+\newpage
+\section{Syntax Conventions}
+\label{sec:syntax}
+The following syntax conventions apply to this document: \\\\
+
+\noindent
+\begin{tabular}{| l | l |} \hline
+Convention & Definition \\
+\hline
+\rsf{mat blue} & a simple (32-bit) read action/data \\
+\rdf{bright blue} & a double (64-bit) read action/data \\
+\wsf{mat red} & simple (32-bit) result data is ready \\
+\wdf{bright red} & double (64-bit) result data is ready \\
+\wbsf{mat green} & a simple (32-bit) write-back action/data \\
+\wbdf{bright green} & a double (64-bit) write-back action/data \\
+ALU & the ALU execution unit \\
+\texttt{ALU} & an instruction of the kind ``ALU'' \\
+\texttt{add} & the \texttt{add} instruction (inside text)\\
+\hline
+\end{tabular}
+
+
+\newpage
+\section{Execution Unit Ports and Latencies}
+\label{sec:exu_ports_section}
+\subsection{Micro-Architecture Overview}
+From an instruction/data dispatch point of view, the \KCore features 5 primary execution units (EXUs):
+\begin{itemize}
+\item 2 ALUs
+\item 1 MAU
+\item 1 LSU
+\item 1 BCU
+\end{itemize}
+
+Each of them makes use of some read and write register-file ports to retrieve
+and store data they process. The implementation of the \KCore features 4
+simple read ports, 6 double read port, 2 simple write ports, 2 double write
+ports and 1 special double write port.  Table~\ref{tab:exus_ports} shows, for
+each EXU, which ports are used at every stage of the pipeline, as well as the
+stage at which the results are ready, with the following conventions: \\
+
+\noindent
+\begin{tabular}{l l}
+\rsf{RPS~i} & Read Port Simple number i (read 32 bits register from the register file) \\
+\rdf{RPD~i} & Read Port Double number i (read 64 bits register pair from the register file) \\
+\wbsf{WPS~i} & Write Port Simple number i (commit 32 bits in a general register) \\
+\wbdf{WPD~i} & Write Port Double number i (commit 64 bits in a general register pair) \\
+\wbsf{WPDS} & Write Port Double Special  (commit 32 bits in system function register) \\
+\wsf{Ready} & Simple Result is ready and made available for bypass to read ports \\
+\wdf{Ready} & Double Result is ready and made available for bypass to read ports \\
+\end{tabular} \\\\
+
+Instructions executing on a particular EXU do not have to use all the EXU
+read/write ports thoroughly, e.g. a \texttt{mulwdl} (executing on the MAU) will
+only use one half of \wbdf{WPD~0} as it outputs only 32 bits.  Furthermore, some
+instruction variants use immediate operands. Although these operands are read by
+the EXUs through their read port, they do not involve any register-file reading
+and cannot lead to any kind of inter instruction dependence, thus having no
+effect on the pipeline flow (\texttt{make} is probably the best example of such
+instructions as it only has one immediate read operand). \\
+
+It is also important to distinguish the EXUs and the instructions they execute.
+Basically, an 'EXU' executes '\texttt{EXU}' kind instructions, i.e. ALUs execute
+\texttt{ALU} instructions, LSU executes \texttt{LSU} instructions and so on.
+However, most EXUs have the extra capacity to execute other kinds of instructions in addition to their ``native'' kind. More specifically:
+\begin{itemize}
+\item ALUs can execute \texttt{ALU} instructions + some (simple) \texttt{FPU} instructions
+\item MAU can execute \texttt{MAU} instructions + the other (complex)
+\texttt{FPU} instructions +
+some (``light'') \texttt{ALU} instructions
+\item LSU can execute \texttt{LSU} instructions + some (``tiny'') \texttt{ALU} instructions
+\item BCU can only execute \texttt{BCU} instructions
+\end{itemize}
+
+Thus, floating point instructions, listed as ``FPU Instructions'' in the
+\KArchitecture, are split into two categories: those that are implemented
+in the ALUs execution units and those that are implemented in the FPU part of
+the MAU execution unit. These instructions share the \mbox{read/write} ports of
+the ALUs or those of the MAU according to their category.
+
+The MAU and LSU units respectively comprise a LIGHT ALU and a TINY ALU execution path
+that use their host's read and write ports and support different subsets of the \texttt{ALU} instructions.
+Namely, the double LIGHT ALU contained in the MAU can handle any \texttt{ALU(D)\_TINY} or \texttt{ALU(D)\_LITE} instruction
+ (in the sense of the Reservation classes documented in the architecture manual) while the DOUBLE TINY ALU can only execute \texttt{ALU(D)\_TINY} instructions.
+Of course, \texttt{ALU} instructions sent to one of these double LIGHT/TINY ALUs execute with
+the same low latency as guaranteed by the main ALU units. Hence their result is
+ready at E1 as apparent in the table, which is earlier than a typical
+\texttt{MAU}/\texttt{LSU} instruction. Similarly, \texttt{FPU} instructions executing in the MAU
+exhibit a longer latency than typical \texttt{MAU} instructions.
+
+In Table~\ref{tab:exus_ports}, these different cases are expressed as
+MAU/\texttt{MAU}, MAU/\texttt{FPU} and MAU/\texttt{ALU} EXUs. Idem for
+LSU/\texttt{LSU} and LSU/\texttt{ALU}. No distinction has been made between
+ALU/\texttt{ALU} and ALU/\texttt{FPU} as it makes no difference from a
+read/write date point of view.
+
+Another feature of the \KCore is that the two 32-bits main ALUs can be combined to
+process 64 bits \texttt{ALU} instructions. In this case, all the read and write
+ports of the two ALUs are available to the instruction with the same read/write
+stages and latencies as indicated for the two separate ALUs. \\
+
+\begin{table}
+\centering
+\begin{tabular}{|p{2.0cm}|P{1.5cm}|P{1.5cm}|P{1.5cm}|P{1.5cm}|P{1.5cm}|P{1.5cm}|}
+\hline \textbf{EXU} & \textbf{ID} & \textbf{RR} & \textbf{E1} & \textbf{E2} & \textbf{E3} & \textbf{E4} \\
+\hline
+\hline
+     &  & \rsf{RPS~0} &              &  &               &  \\*
+ALU0 &  & \rsf{RPS~1} &              &  &               &  \\*
+     &  &             &  \wsf{Ready} &  &  \wbsf{WPS~0} &  \\*
+\hline
+\hline
+     &  & \rsf{RPS~2} &              &  &               &  \\*
+ALU1 &  & \rsf{RPS~3} &              &  &               &  \\*
+     &  &             &  \wsf{Ready} &  &  \wbsf{WPS~1} &  \\*
+\hline
+\hline
+     &  & \rdf{RPD~0} &  &  &  &  \\*
+MAU/\texttt{MAU}  &  & \rdf{RPD~1} &  &  &  &  \\*
+     &  &  & \rdf{RPD~2} &  &  &  \\*
+     &  &  &  & \wdf{Ready} &  & \wbdf{WPD~0} \\*
+\hline
+     &  & \rdf{RPD~0} &  &  &  &  \\*
+MAU/\texttt{FPU}  &  & \rdf{RPD~1} &  &  &  &  \\*
+     &  & \rdf{RPD~2} &  &  &  &  \\*
+     &  &  &  &  &  & \wbdf{WPD~0} \\*
+\hline
+     &  & \rdf{RPD~0} &  &  &  &  \\*
+MAU/\texttt{ALU}  &  & \rdf{RPD~1} &  &  &  &  \\*
+     &  &  & \wsf{Ready} &  &  & \wbdf{WPD~0} \\*
+\hline
+\hline
+     &  & \rdf{RPD~3} &  &  &             &  \\*
+LSU/\texttt{LSU}  &  & \rdf{RPD~4} &  &  &             &  \\*
+     &  &            & \rdf{RPD~2} &  &  &  \\*
+     &  &            &  & \wdf{Ready} &  \wbdf{WPD~1} &  \\*
+\hline
+     &  & \rdf{RPD~3} &  &  &             &  \\*
+LSU/\texttt{ALU}  &  & \rdf{RPD~4} &  &  &             &  \\*
+     &  &            &  \wsf{Ready} & & \wbdf{WPD~1} &  \\*
+\hline
+\hline
+BCU  & \rdf{RPD~5} &  &  &  &             &  \\*
+     &  &         &  &  &  \wbsf{WPDS} &  \\*
+\hline
+\end{tabular}
+\caption{EXUs read/write ports and latencies}
+\label{tab:exus_ports}
+\end{table}
+
+\subsection{Consequences on the Execution Flow}
+
+Once an instruction has entered the \wsf{Ready} stage of the EXU it is executing
+on, or has flowed further down the pipeline, its result may be bypassed to other
+instructions upstream that need to read it. Before this stage, the result is not
+available and data-dependent upstream instructions will have to wait (stall). In
+the particular case of MAU/\texttt{FPU} instructions, the result is ready at E4
+and may be bypassed at that cycle, just before being written-back (the
+\wsf{Ready} was not put in the table for ``graphical'' reasons only but it
+should be considered there).
+
+Using Table~\ref{tab:exus_ports}, we may determine the number of stall cycles
+that will take place between two data-dependent instructions following each
+other in the pipeline in the general case. Such wait cycles are called
+RAW (for Read-After-Write) stalls and constitute one of the possible causes of
+stalls in the \KCore pipeline. \\
+
+For instance, two data-dependent \texttt{ALU} instructions may follow each other
+without any stall cycle (be they executed on main ALUs or on a double LIGHT/TINY ALU). Indeed,
+when the first one reaches E1, its result is ready and may be directly bypassed
+to the read port (\rsf{RPS~i} or \rdf{RPD~i}) used by the second one at RR. If these two
+\texttt{ALU} instructions are alone in their respective bundle, then the
+execution of the second bundle may follow that of the first one without any
+stall. For example:
+
+\begin{lstlisting}
+add $r0 = $r1, $r2
+;;                  ## no stall between these two bundles,
+                    ## $r0 is bypassed from E1 to RR
+add $r3 = $r0, $r4
+;;
+\end{lstlisting}
+
+On the other hand, a branch instruction reading a GPR (a
+register of the general-purpose register file) needs it at stage ID (through
+\rdf{RPD~5}). If this GPR is the target of a \texttt{MAU} instruction of the
+preceding bundle, then the branch instruction (and of course the potential other
+instructions of its bundle) will spend 2 cycles stalling at ID while the
+\texttt{MAU} bundle progresses in the pipeline. When the latter reaches E2, the
+result of the \texttt{MAU} instruction is ready, bypassed to the branch
+instruction still waiting at ID (through \rdf{RPD~5}) and the branch bundle
+resumes execution. At this point in time, stages RR and E1 contain no valid
+bundles (they are ``bubbles'' or ``holes`` in the pipeline), which reflects the
+fact that we lost two cycles waiting on the RAW dependency.
+
+\begin{lstlisting}
+add $r0 = $r1, $r2
+mulwdl $r32 = $r31, $r30
+;;                      ## 2 cycles stall between these two bundles,
+                        ## then $r32 is bypassed from E2 to ID
+                        ## One cycle later, $r0 is bypassed from E3 to RR
+add $r3 = $r0, $r4
+cb.odd $r32, label_1
+;;
+...
+label_1:
+\end{lstlisting}
+
+
+\bigskip
+To compute the number of stall cycles a particular bundle incurs, all the
+instructions composing it must be analyzed and checked for RAW stalls with
+respect to all the bundles that are downstream in the pipeline. This is in fact
+how the hardware proceeds, stalling a bundle as long as necessary at ID, RR or
+E1 when it needs to read an operand that is not yet available.
+
+\begin{lstlisting}
+add $r0 = $r1, $r2
+muluuwd $r42r43 = $r0, $r20
+lw $r32 = 0[$r30]
+;;
+sbf $r60 = $r61, $r62    ## no stall for this bundle:
+sw 0[$r50] = $r42        ## $r42 is bypassed from E2 to E1 (through RPD2)
+;;
+xor $r60 = $r60, $r0    ## this bundle stalls 1 cycle at fetch
+cb.odd $r32, label_2    ## to let the lw progress to E2
+;;                      ## then $r32 is bypassed from E2 to ID
+...
+label_2:
+\end{lstlisting}
+
+Of course, these stall cycles depend on exactly which operands are used by the
+concerned instructions and on their sizes. Only true data dependencies trigger
+stalls. So for example:
+
+\begin{lstlisting}
+ffmawd $r32r33 = $r40r41, $r31, $r30  ## MAU/FPU: result ready only at E4
+;;
+                                ## 3 cycles stall between these two bundles,
+                                ## then $r32 is bypassed from E4 to RR
+
+fabs $r3 = $r0, $r32            ## ALU/FPU: needs $r32 at RR so waits 3 cycles there
+;;
+\end{lstlisting}
+
+But:
+
+\begin{lstlisting}
+ffmaw $r33 = $r40, $r31         ## MAU/FPU: $r33 result Ready only at E4
+;;
+                                ## No true data dependency => no stall
+
+fabsw $r3 = $r0, $r32           ## ALU/FPU: needs $r32 at RR
+;;
+\end{lstlisting}
+
+In the example above, although \wbdf{WBDP 0} (that is a double write port) is
+dedicated to the write back of the MAU results in the register file, the
+\texttt{ffma} instruction only uses its top half as it writes only \verb|$r33| that is
+32-bit register (and not a register pair). As a result, \verb|$r32| is not seen
+as targeted by the first bundle in the scoreboard and no RAW stall occurs.\\
+
+The tables in Section~\ref{sec:instructions_tables} describe exactly which
+operands of what size are read/written at every stage of the pipeline for all
+the instructions of the instruction set.
+
+\subsection{Instruction Pipeline Particularities}
+
+Looking at Table~\ref{tab:exus_ports}, several particularities appear that
+will help explain some irregularities/constraints of the \KCore pipeline.
+
+% FIXME Bostan legacy, should be completely removed?
+\subsubsection{Shared Double Read Port}
+
+First, \rdf{RPD~2} is shared between the MAU and the LSU. As a result,
+\texttt{LSU} instructions that use this port (mostly stores) cannot be bundled
+with MAU/* instructions that use it too, as expressed in
+bundling Rule 9 of Section~\ref{sec:constraints}. The instructions
+using this shared port normally belong to a reservation class of type MAU\_ACC* or
+LSU\_ACC*, as stated in Section~\ref{sec:instructions_index}.
+However, due to a hardware bug in the \KCore implementation, no MAU/\texttt{FPU}
+at all can be bundled with a \texttt{LSU} instruction using this port. As a result, the only
+MAU/* instructions that can be bundled with a store/\texttt{acws*} are plain MAU/\texttt{MAU} instructions, excluding all \texttt{mad*/msb*} ``MAC'' instructions.
+
+
+Then we see that \rdf{RPD~2} is marked as used at E1 by MAU/\texttt{MAU} and
+LSU/\texttt{LSU}, but RR for MAU/\texttt{FPU}. In fact, the real register-file
+read happens at RR, which allows to give its input data as early as possible to
+the FPU part of the MAU that has a lot of long processing to do. So if a
+MAU/\texttt{FPU} instruction has a RAW dependency on this port with respect to
+an other instruction downstream in the pipeline, it will stall at RR until the
+downstream instruction releases its result . As for MAU/\texttt{MAU}
+instructions and LSU/\texttt{LSU} instructions, they make no use of this port
+before the end of the E1 stage. As a result, in the same scenario they would not
+be stalled at RR but progress to E1 instead. Once at E1, the situation is
+re-examined and stalls or bypasses may happen according to the availability of
+the needed operand at that time. Thus, at the cost of additional hardware and
+complexity, this mechanism brings a kind of ``virtual'' E1 double port that is
+in fact \rdf{RPD~2} at RR plus bypasses/stalls at E1. The fact that this double
+port acts as if it were as a E1 port for MAU/\texttt{MAU}s instruction and
+LSU/\texttt{LSU} instructions reduces the possibilities of RAW stall, and, in
+particular, allows to process data-dependent MAC operations at the rate of one
+per cycle, the E2 result of one being bypassed to the accumulator port of the
+following at E1. \\
+
+\subsubsection{E3 Write-After-Write Stall}
+
+It is also apparent in Table~\ref{tab:exus_ports} that the write-back port used
+by the MAU (\wbdf{WPD~0}) commits the outputs of this unit in the register-file
+at the end of E4, be the instruction an MAU/\texttt{MAU}, MAU/\texttt{FPU} or
+MAU/\texttt{ALU}, whereas all the other write-back ports commit at E3. This has
+one side effect: if an instruction executing in the MAU is followed on the next
+cycle by an instruction executing on an other unit (say on an ALU) and they both want to write
+the same register, then there is a write-after-write conflict (WAW) because they
+will both want to write the same register at the same time.
+The hardware deals with it by simply ignoring (squashing) the result of the MAU/\texttt{MAU}
+instruction, only performing the write-back of the instruction in the ALU without any stalls
+(contrary to the k1a implementation of the core). 
+A subsequent instruction depending (RAW) on the result of the ALU instruction will be un-stalled,
+as usual, as soon as the ALU instruction reaches E1 (as if the MAU instruction had not
+been there at all).
+
+In the \KCore implementation, the only case when a WAW pseudo-dependency will generate a stall 
+is when an instruction (I) wants to write a GPR (R), that is also targeted by a previously issued 
+streaming load, that is itself still outstanding in the memory system.
+In this particular case, (I) will be stalled at E3 until the streaming load comes back and commits 
+its result in the register file.
+Of course, this should not be very common as it requires that no instruction between the 
+streaming load and (I), including (I) itself, reads (R) (otherwise the instruction in question)
+will classically stall at F, RR or E1 in RAW.
+
+\subsubsection{\texttt{get} Instruction Bundling}
+
+The write-back port of the BCU, \wbsf{WPDS}, addresses system function registers
+(SFRs) such as PS, CS, MMC (see the \KArchitecture for the full list of
+them) but it is not a regular write-back port, inasmuch as it cannot target GPRs
+of the register file.
+
+As a result, the few \texttt{BCU} instructions that need to commit a result in the register file use an indirect path, going through the LIGHT ALU of the MAU to gain access to regular write-back port \wbdf{WPD~0}. These instructions are:
+\begin{itemize}
+\item \texttt{get}, \texttt{iget}
+\end{itemize}
+
+Hence, when one of these instructions is issued in a bundle, both the BCU and
+the MAU are reserved and cannot be used by other instructions of the bundle.
+Moreover, only 2 tiny \texttt{ALU} instructions may be issued in the bundle
+(that will necessarily execute on ALU0 and ALU1). This is because a third one
+would be sent to the MAU by the dispatch logic that has no knowledge of the
+magic that turns a BCU \texttt{get} instruction into a MAU instruction in the
+middle of the pipeline, thus leading to an architecturally undefined result with
+two instructions trying to execute on the MAU at the same time. However, a
+regular LSU instruction is allowed in the bundle. These constraints are
+expressed in bundling Rule 5 of Section~\ref{sec:constraints}.
+
+\subsubsection{Integer Carry Management}
+
+There is one integer carry available in the \KCore. It is read and written by
+\texttt{ALU} \texttt{addc}, \texttt{addcd}, \texttt{sbfc} and \texttt{sbfcd} instructions
+and by \texttt{MAU} \texttt{madsucwd} and \texttt{maduucwd} instructions; and read only
+by \texttt{ALU} \texttt{addci}, \texttt{addcid}, \texttt{sbfci} and \texttt{sbfcid}
+instructions and by \texttt{MAU} \texttt{madsuciwd} and \texttt{maduuciwd}
+instructions.\\
+
+As apparent in the tables of Section~\ref{sec:instructions_tables}, \texttt{ALU}
+instructions read it at RR and make it available for bypass (\wsf{Ready}) at E1,
+and \texttt{MAU} instructions read it at E1 and make it \wsf{Ready} at E2. In
+particular, this means, for example, that two consecutive \texttt{addc}
+instructions may execute without stalling, the first one bypassing its output
+carry to the input of the second one as below:\\
+
+\begin{lstlisting}
+addc $r20 = $r0, $r2
+;;
+addc $r21 = $r20, $r3  ## no stall: $r20 and the carry are bypassed from E1 to RR
+;;
+\end{lstlisting}
+
+The integer carry corresponds to bit 0 of CS (CS.IC) and this is where it is
+written back at the end of stage E3. \texttt{set} and \texttt{hfxb} instructions
+targeting CS.IC make their result available for bypass at E1 so that an ALU or
+MAU instruction needing to read the carry does not stall after them, as stated
+by Rule 15 of Section~\ref{sec:constraints}. Rule 3 of the same Section
+details bundling constraints related to the carry.\\
+
+The CS register also holds a carry counter in its bits [31:16]. This is a
+special hardware counter that auto-increments itself each time a bundle
+containing an instruction that outputs a carry at 1 reaches E3. Thus it is
+read-modified-written atomically at E3 and cannot occasion any stalls for
+``normal'' (i.e non BCU) instructions.
+
+\subsubsection{IEEE-754 Flags and Rounding Mode}
+\paragraph{IEEE-754 Flags}
+
+Some MAU/\texttt{FPU} and some ALU/\texttt{FPU} instructions (see the architectural manual for the list of them) may raise one or more of the 5 IEEE-754 floating point flags:
+\begin{itemize}
+\item invalid operation
+\item division by zero
+\item overflow
+\item underflow
+\item inexact
+\end{itemize}
+
+These flags are written at E4 in the related bit of the CS register, where they are sticky, i.e. the hardware never clears them (only a software instruction such as \texttt{set} or \texttt{hfxb} can bring them back to zero once they have been raised).\\
+It is valid to bundle together a MAU/\texttt{FPU} instruction and a
+ALU/\texttt{FPU} instruction that may both raise one or more of these flags. In this case, the flags output by the two execution units are ORed together by pairs at E4 before being written back into the related CS bits.\\
+In any case, the modification of CS is done in an atomic read-modify-write
+manner at E4 and cannot cause any pipeline stall (except for \texttt{get}, \texttt{hfx} and \texttt{trapa/o} instructions coming after a \texttt{FPU} instruction that could touch these flags).\\
+
+Instructions that modify these flags are subject to bundling Rule 4 of Section~\ref{sec:constraints}.
+
+\paragraph{Rounding Mode}
+Some MAU/\texttt{FPU} instructions (see the architectural manual for the list of
+them) use the RM (Rounding Mode) field of the CS register to apply one or the other
+rounding type. This field is considered as pseudo-static in the hardware,
+meaning that no dependency check at all is performed on it: the pipeline will
+never bypass it nor stall because of it. It is the responsibility of the
+software to ensure that this field is set to the correct value before issuing
+any concerned \texttt{FPU} instruction to the pipeline. One way to do this is to have a \texttt{barrier} instruction follow the instruction that changes the value of CS.RM, as stated in Rule 13 of Section~\ref{sec:constraints}.
+
+
+\newpage
+\section{LSU Instructions Latencies}
+This section covers the latencies of \texttt{LSU} instructions executing on the
+processing (PE) and management (RM) cores of the ``compute clusters''. The behavior of memory accesses in the quad-RMs of IO-clusters is not the same and will not be detailed in this document, however the main differences can be listed as:
+\begin{itemize}
+\item misalignment is not supported in IO-clusters
+\item typical load hits return at E3 in IO-clusters (instead of E2 in compute clusters)
+\item accesses to the SMEM have a longer latency (+2 cycles) in the IO-cluster
+\item of course accesses to the DDR memory have a much longer latency than accesses to the SMEM
+\end{itemize}
+
+Moreover, it should be noted that all the access latencies (the time that an
+access takes to return its result to the core) and all the cache busy
+latencies (the time during which the L1 Data cache is busy and does not grant any access,
+e.g. after a miss) given in this section are subject to conflicts/arbitration in
+the memory system (including conflicts between L1 I cache and L1 D cache of the same
+core) as soon as accesses are not strictly restricted to the core data cache. As a result, and not taking into account maintenance instructions:
+\begin{itemize}
+\item only hits latencies of load instruction are guaranteed
+\item all misses and uncached accesses, as well as all store instructions,
+deal with the memory system and/or with the internal state of the
+write buffer so there is no guarantee on their latency / cache busy time
+\end{itemize}
+
+The cycle figures given for accesses dealing with the memory system correspond
+to best execution times, when no conflict whatsoever happens and the road
+to/from the SMEM is free.\\
+
+In the compute clusters, RMs and PEs access the memory using either cached or uncached accesses.
+The compute cluster \KCore data cache characteristics are as follows:
+\begin{itemize}
+\item cache size: 16KB = 4KB per way * 4 ways
+\item line size: 64 Bytes
+\item cached accesses follow a write-through write-around policy with stores going to the SMEM
+through a write-buffer
+\item the write buffer contains 8 64-bit words, is fully associative, allows recombination and uses a true LRU eviction policy
+\item it always tries to keep 1 word free (out of 8), meaning that it will spontaneously try to evict the LRU word when full
+\end{itemize}
+
+\subsection{Load Instructions}
+\subsubsection{Cached Load Instructions}
+\label{sec:cached_loads}
+\paragraph{Hits}
+In the compute cluster implementation of the \KCore, regular cached load
+accesses that hit make their result available for bypass at the end of stage E2.
+Thus, reading a load result in the following bundle will result in a 1 cycle
+stall if the consumer EXU is an ALU, 2 if it is a BCU, 0 if it is a LSU using
+the result as store data, etc. as may easily be computed using
+Table~\ref{tab:exus_ports} of Section~\ref{sec:exu_ports_section}.
+
+\begin{lstlisting}
+lw $r0 = 0[$r20] ## hits
+;;
+add $r5 = $r0, $r2 ## stalls 1 cycle at RR then $r0 is bypassed from E2 to RR
+;;
+\end{lstlisting}
+
+\begin{lstlisting}
+lw $r0 = 0[$r20] ## hits
+;;
+cb.eqz $r0, some_label ## stalls 2 cycles at ID then $r0 is bypassed from E2 to ID
+;;
+\end{lstlisting}
+
+\begin{lstlisting}
+lw $r0 = 0[$r20] ## hits
+;;
+sw 10[$r5] = $r0 ## no stalls: $r0 is directly bypassed from E1 to RR
+;;
+\end{lstlisting}
+
+\paragraph{Misses}
+On a load miss, the data cache (L1D cache) performs a line refill and will not accept
+any request before its completion. A typical refill lasts 17 cycles as the SMEM is
+10 cycles away and the L1D cache lines are 64 bytes wide ( =\textgreater{} 8*64 bits transfers for a refill burst 
+=\textgreater{} 10 cycles to get the first 64-bit word + 7 cycles to get the 7 remaining words).
+This means that in the example code below:
+
+\begin{lstlisting}
+lw $r0 = 0[$r20]   ## misses
+;;
+sd 10[$r5] = $r6r7 ## stalls 17 cycles at E1 as L1D cache is busy
+;;
+\end{lstlisting}
+
+the store will stall 17 cycles at E1 and be granted by the L1D cache on the 18th
+cycle.\\ 
+
+In addition to memory system delays, another cause is susceptible to
+make that figure rise: the miss in L1D cache / hit in write buffer
+scenario. This happens when a load misses in the cache but the write buffer 
+contains data that belong to the cache line where the load missed.  
+In such a situation, there is a danger of inconsistency as the L1D cache could refill data
+from the memory system that are not up to date. To prevent such troubles and
+keep the hardware simple, the whole write buffer (that is 8 x 64 bits words) is
+flushed to the SMEM first, and then the refill sequence is
+performed. As a result, the busy time of the cache will be increased by 1 to 8 cycles
+(according to the actual filling rate of the write buffer), thus reaching 18 to 25 cycles instead of 17.\\
+
+The hardware implementation uses a critical-word-first scheme that allows to
+bring back first the words requested by the core from the memory system during
+refills. Hence, in the above example, the load word instruction will receive its
+result (at E3 where it has been waiting for it during the miss), commit it in
+the register file and exit the pipeline before the store is released, because
+the loaded data are forwarded by the data cache to the core before the end of
+the refill. In this particular case, it does not have any interesting effect on
+the core execution flow as the store will remain stalled at E1 until the end of
+the refill, blocking the rest of the pipeline upstream anyway. However,
+critical-word-first is interesting if the result of the load is needed (e.g.)
+for computation and no other access is made to the L1D cache for some cycles:
+
+\begin{lstlisting}
+lw $r0 = 0[$r20]  ## misses
+;;
+add $r5 = $r0, $r2 ## stalls 11 cycles at RR then $r0 is bypassed from E3 to RR
+;;
+xor $r5 = $r5, $r30 ## any instructions but loads/stores
+sbf $r50 = $r40, 35
+mulwdl $r24 = $r51, $r8
+;;
+add $r50 = $r50, 3 ## any instructions but loads/stores
+;;
+nop  ## any instructions but loads/stores
+;;
+nop ## any instructions but loads/stores
+;;
+nop ## any instructions but loads/stores
+;;
+lw.add.x1 $r28 = $r29[$r31] ## granted by the D$ at E1 with no stall
+;;
+
+\end{lstlisting}
+
+As precised above, in the \KCore implementation, a L1D cache refill is 64 bytes wide and the SMEM
+memory system typically answers it in 8 consecutive 64 bits words, so the
+L1D cache is likely to grant again 7 cycles after it transmitted the critical-word
+to the core. This means that:
+\begin{itemize}
+\item \textbf{the pure load miss penalty is 10 cycles} ( = execution latency of
+11 cycles), to which we must add the usual (hit case) number of RAW dependency stall cycles: 1 for ALUs, 2 for BCU, etc. as seen in the hits subsection.
+\item \textbf{the L1D cache is unavailable for an extra 7 cycles after the critical-word return}, hence a total of 17 stall cycles ( = execution latency of 18) if we wanted to access it directly after the load, as in the first example of this subsection.
+\end{itemize}
+
+In the code above, the \texttt{add \$r5 = \$r0, \$r2} will stall 10 + 1 = 11
+cycles at RR. The \texttt{lw.add.x1 \$r28 = \$r29[\$r31]} will proceed without
+additional stalls, though it is only 6 bundles further than the instruction that
+uses the critical-word (\texttt{add \$r5 = \$r0, \$r2}), because the add has
+waited at RR (and not E1), thus giving the load an extra cycle to go to E1.
+
+\paragraph{Misalignment Penalties}
+The \KCore supports data misalignment, that is a load or a store instruction
+may target an object whose address is not a multiple of its size, like a \texttt{ld} at an address that does not end in 0x0 or 0x8, such as 0x10004 for example. The hardware will execute such accesses correctly but they may incur latency penalties.\\
+
+As mentioned previously, a L1D cache line width is 64 bytes.  As long as a load
+does not overlap two lines, there is no penalty except if it misses and overlaps
+2 64 bits words. In this particular case, the load penalty goes from 10 to 11 as
+the critical-word-first logic must wait for two 64 bits words before forwarding the
+result to the core. \\
+
+If a load overlaps two lines, as would, for example, a \texttt{lw} at address
+0x2003e, then the data cache breaks the access in two, performs each half-access
+in turn (that can hit or miss independently) and finally concatenates the two
+half results as needed before presenting the data back to the core. The fact that the access is split in two always adds one cycle to the execution time of the load. Another additional cycle is needed to concatenate the two half results if the second half access hits (if it misses, this cycle is present anyway to help achieve a good timing on data returning from the memory so we do not count it as extra).\\
+We may now compute the latencies of misaligned loads that cross L1D cache lines in the four possible hit/miss configurations:\\
+
+\noindent
+\begin{tabular}{|c|c|c|c|c||c||c||c|} \hline
+1st half & 2nd half & 1st half & 2nd half & add. misal. & total exec & total use & total L1D \\
+status & status & latency & latency & penalty & latency & penalty & cache busy  \\
+\hline
+\hline
+hit & hit & 1 & 1 & 1 & 3 & 2 & 2 \\
+hit & miss & 1 & 11 & 0 & 12 & 11 & 18 \\
+miss & hit & 18 & 1 & 1 & 20 & 19 & 19 \\
+miss & miss & 18 & 11 & 0 & 29 & 28 & 35 \\
+\hline
+\end{tabular}
+\bigskip
+
+where \emph{total exec latency} represents the total number of cycles taken to
+execute the load, \emph{total use penalty} represents the number of cycles an
+instruction immediately following the load and needing the load result at E1
+(i.e. with no extra RAW stall) would spend stalling at this stage (so total
+use penalty = total exec latency - 1) and \emph{total L1D cache busy} represents the
+number of cycles an instruction immediately following the load and wanting to
+access the L1D cache at E1 would spend stalling at this stage.\\
+Note that the latency of a first half miss is considered to be 18 (instead of 11
+for a regular load miss) because the 2nd half access cannot start as long as the
+L1D cache is busy refilling the line in which the 1st half missed.
+By comparison, a regular access (not crossing L1D cache lines) would be represented as such:\\
+
+\noindent
+\begin{tabular}{|c|c|c||c||c||c|}
+\hline
+access & access & add. misal. & total exec & total use & total L1D \\
+status & latency & penalty & latency & penalty & cache busy  \\
+\hline
+\hline
+hit & 1 & 0 & 1 & 0 & 0 \\
+miss (regular) & 11 & 0 & 11 & 10 & 17 \\
+miss (ovlp 2 x 64-bit) & 11 & 1 & 12 & 11 & 18 \\
+\hline
+\end{tabular}
+\bigskip
+
+\subsubsection{Uncached Load Instructions}
+\label{sec:uncached_loads}
+In the \KCore, uncached loads come in two flavors: blocking and non-blocking
+(streaming). A load may be uncached either because the data cache is turned off
+(PS.DCE = 0), or because it is an explicit uncached instruction (such as
+\texttt{lwu}) or because the MMU decided it was uncached (MMU off and address in
+the peripheral space, or MMU on and address in an uncached/device page). Streaming is
+enabled for uncached loads when PS.USE = 1, as defined in the \KArchitecture.
+
+On one hand, blocking uncached loads stop the core execution by stalling the
+load bundle at E3 in wait for its answer. On the other hand, streaming
+uncached loads (also simply known as ``streaming loads'' since only uncached
+loads may be streaming) allow the core to continue executing as soon as the load
+has successfully departed to the SMEM and as long as the pipeline is not stalled
+by a RAW dependency on the result of the load. The loaded data will then be
+committed in the register file asynchronously to the core instructions flow.\\
+
+The typical execution latency of an uncached blocking load is 10 cycles (1 cycle
+at E1 + 1 cycle at E2 + 8 cycles stalled at E3), which is equivalent to 9 cycles
+of \emph{total use penalty} as defined in the previous section, and 9 cycles of
+\emph{total L1D cache busy}. This is one cycle better than the execution latency 
+of a miss because, as the hardware does not have any hit/miss check to perform,
+the access departs to the memory system one cycle earlier.\\
+These figures must typically be increased by one if the access spans two 64 bits words.\\
+
+As for the streaming loads, they also typically exhibit a latency of 10 cycles,
+ equivalent to 9 cycles of \emph{total use penalty}. However, they do not keep the cache busy (once they have been sent to the memory system), so other accesses can be ``streamed'' to the SMEM through it (cached and uncached blocking accesses can of course be performed too). Below is the table summarizing this information in the usual format:\\
+
+\noindent
+\begin{tabular}{|c|c|c||c||c||c|}
+\hline
+access & access & add. misal. & total exec & total use & total L1D \\
+type & latency & penalty & latency & penalty & cache busy  \\
+\hline
+\hline
+uncached blocking & 10 & 0 & 10 & 9 & 9 \\
+uncached blocking ovlp & 10 & 1 & 11 & 10 & 10 \\
+uncached streaming & 10 & 0 & 1 & 9 & 0 \\
+uncached streaming ovlp & 10 & 1 & 1 & 10 & 2 \\
+\hline
+\end{tabular}
+\bigskip
+
+Of course, the meaning of \emph{access latency} is a little different for
+streaming loads: what it really means here is the typical number of cycles
+until the result of the streaming load is available. Once again, contrary to
+blocking loads, streaming loads will not stall the pipeline once they have gone
+out of the L1D cache unless they are the source of a RAW dependency stall (in which case they typically produce 
+\emph{total use penalty} cycles. The fact that they do not block the pipeline is reflected by the value of 1 for \emph{total exec latency}.\\
+
+Streaming loads \emph{access latency} is subject to the same increments as
+blocking loads \emph{access latency} with respect to misalignment. In addition,
+a misaligned streaming load will cause the L1D cache to appear busy during 2
+cycles (\emph{total L1D cache busy} = 2) instead of 0.\\
+
+In the \KCore implementation, the FIFOs holding target GPRs and formatting
+information about the outstanding streaming loads are sized so that they can absorb 
+the exact number of loads that match the number of cycles needed to access the SMEM
+ (total outstanding capacity = 10). This provides the benefit that, with a responsive SMEM,
+streaming loads can be emitted continuously, at the rhythm of one per cycle without any stalls
+of the core (provided that the consumers have been scheduled far enough to avoid RAW stalls: 
+10 bundles further than the load they depend on for E1 readers, 11 bundles for RR readers (e.g. \texttt{ALU} instructions)).
+So with a good scheduling, the \KCore is able to issue one streaming load double (8 bytes) every cycle without stalling.
+
+
+\subsection{Store Instructions}
+\subsubsection{Cached Store Instructions}
+For cached stores, the hardware implements a write-through write-around policy where
+cached stores always go to the memory system through the write-buffer, and also update the cache itself
+if they hit in it (in case a store misses in the cache, the latter is left untouched 
+and only the write-buffer is updated, which is the definition of a write-through write-around policy).
+
+We should also mention that stores are posted: this means that,
+once they have been granted by the L1D cache at E1, their bundle will not be
+stalled as an effect of the store execution in the cache (contrary to cached
+loads that may stall their bundle, and the pipeline, when they miss). Thus their
+execution latency is always 1. However, they may make the L1D cache busy, depending on the state of the write-buffer,
+and that will stall the pipeline should the core want to access the cache.
+
+Regardless of the hit/miss status of a cached store in the cache (that will only change 
+the fact that the cache itself is updated with the store data or not), three different cases 
+can happen: 
+
+\begin{itemize}
+\item when a well-aligned cached store hits in the write buffer (that is
+it recombines with data already present in the write buffer) there is no penalty
+and \emph{total L1D cache busy} equals 0.\\
+
+\item When a well-aligned cached store misses in the write buffer but
+there is free room left in the latter, there is no penalty and \emph{total L1D cache busy} equals 0.\\
+
+\item When a well-aligned cached store misses in the write buffer and
+there is no room left in it, the write buffer will try to evict
+one of its data (the LRU) to the memory system to free a slot for the newcomer. As long as
+it does not succeed, the cache will be considered busy, refusing to grant any
+new access. This situation can last from 1 to many cycles according to the
+availability of the memory system. However, this should typically not happen too
+often as the write buffer always tries to have at least one free slot at any given time.
+\end{itemize}
+
+\paragraph{Misalignment Penalties}
+
+If a cached store is misaligned but does not overlap 2 64 bits words, there is no misalignment penalty whatsoever.\\
+
+If it overlaps 2 64 bits words, then there
+is a misalignment penalty due to the fact that the write buffer is organized as
+a (write only) fully associative cache of 8 64 bits words. Hence it cannot
+handle a 64 bits words overlapping access in one cycle. Consequently, the store
+will be cut in two halves that will be handled separately in the
+write buffer. This will always generate one cycle of \emph{L1D cache busy}
+ that should be added to the cycles of \emph{L1D cache busy} generated by each half access, 
+according to its hit/miss status in the write-buffer, as described above.
+
+\subsubsection{Uncached Store Instructions}
+
+Just as for the loads, uncached stores come in two flavors: blocking and streaming.\\
+
+Unlike any other kinds of stores, uncached blocking stores are not posted, that
+is the instruction will wait at E3 until the ``store done'' notification comes
+back from the memory system. This allows to get precise traps in case of memory
+errors (such as DSECCERROR, DDECCERROR or DSYSERROR). Consequently, an uncached
+blocking store exhibits the same timing characteristics as an uncached blocking
+load: a typical execution latency of 10 cycles (1 cycle at E1 + 1 cycle at E2 +
+8 cycles stalled at E3) and 9 cycles of \emph{total L1D cache busy}.\\
+These figures must typically be increased by one if the access spans two 64 bits words.\\
+
+Streaming stores, on the other hand, are posted so they do not block the
+core execution (unless they are not immediately granted by the memory
+system once at E2 in the L1D cache), neither do they typically keep the L1D cache busy.\\
+However, as for streaming loads, their \emph{total L1D cache busy} is increased by 2 (so going from 0 to 2) if the access spans two 64 bits words.\\
+Contrary to streaming loads, streaming stores do not need to be pushed into any
+FIFO so their number is virtually unlimited, that is the core has the ability to send as many streaming stores as wanted to the memory system without stalling (unless the SMEM itself stops granting requests).\\
+
+\noindent
+\begin{tabular}{|c|c|c||c||c|} \hline
+access & access & add. misal. & total exec & total L1D  \\
+type & latency & penalty & latency & cache busy  \\
+\hline
+\hline
+uncached blocking & 10 & 0 & 10 & 9 \\
+uncached blocking ovlp & 10 & 1 & 11 & 10 \\
+uncached streaming & 1 & 0 & 1 & 0 \\
+uncached streaming ovlp & 1 & 1 & 1 & 2 \\
+\hline
+\end{tabular}
+\bigskip
+
+\subsection{Atomic Instructions}
+
+There are two variants of each atomic memory access instructions in the \KCore
+ISA: cached and uncached. Cached atomic instructions are \texttt{acws}, \texttt{afda} and \texttt{aldc}.
+Uncached atomic instructions are \texttt{acwsu}, \texttt{afdau} and \texttt{aldcu}.
+One important peculiarity to note about \texttt{acws}, \texttt{afda} and \texttt{aldc} is that 
+they do not obey to the cache policy dictated by the MMU: these instructions will always be
+cached whatever the cache policy found in the TLB entry that maps the virtual page they belong to.
+(As usual for *U instructions, \texttt{acwsu}, \texttt{afdau} and \texttt{aldcu} also ignore the MMU
+cache policy directive and are always uncached).\\
+
+From a latency point of view, the uncached atomic
+instructions can be thought of as blocking uncached loads that would need one
+extra cycle to come back, giving a typical execution latency of 11 cycles (1
+cycle at E1 + 1 cycle at E2 + 9 cycles stalled at E3), equivalent to 10 cycles of
+\emph{total use penalty}, and 10 cycles of \emph{total L1D cache busy}.\\
+As for cached atomic instructions, they deliver their result to the core with the
+same latency as a cached load (incurring the same hit/miss \emph{total use penalty}) 
+but their \emph{total L1D cache busy} is that of a cached load plus that of a cached store plus one.
+
+\subsection{Data Cache Maintenance Instructions}
+
+\texttt{dinval} invalidates all the lines of the L1D cache, which is instantaneous
+in the hardware implementation as the valid bits are in registers. Its execution
+latency is 1 and its \emph{total L1D cache busy} time is 0.\\
+
+\texttt{dinvall} invalidates the concerned line if the provided address hits in
+the cache else does nothing. For the same reason as \texttt{dinval}, this
+instruction has an execution latency of 1 and a \emph{total L1D cache busy} of 0.\\
+
+\texttt{dtouchl} acts as a cached load that would not commit anything 
+in the core's register file. It can be used to pre-heat some addresses in the cache.
+It has no \emph{total use penalty} (since it does not bring back
+any data to the core itself) but it does exhibit the \emph{total L1D cache busy} 
+time of a well aligned cached load.
+
+\texttt{wpurge} orders to purge the write buffer (i.e.: flush its content to
+the memory system and invalidate all the words). It is posted so its execution
+latency is 1. Its \emph{total L1D cache busy} time can be anything between 0 and a
+lot of cycles according to the write buffer content and the memory system
+responsiveness, but 7 should be fairly typical.\\
+
+\subsection{Special LSU Instructions}
+
+Two \texttt{LSU} instructions cannot be categorized as loads nor stores nor maintenance instructions: \texttt{dzerol} and \texttt{fence}.
+
+\texttt{dzerol} acts as 8 consecutive \texttt{sd} instructions, filling a
+L1D cache line entirely with zeros.\\
+\noindent
+When uncached:
+\begin{itemize}
+\item it is always considered streaming (even if PS.USE = 0)
+\item it will typically stall the core pipeline at E3 for 7 cycles
+\item it will have a \emph{total L1D cache busy} time of 8 cycles
+\end{itemize}
+
+\noindent
+When cached, it is posted (so will not directly stall the core) but typically exhibit
+ a \emph{total L1D cache busy} of 7 (according to the write buffer state; the write buffer will always split the access in 8)
+
+\texttt{fence} is an instruction that stalls at E1 until there are no more data
+accesses ``in flight'' in the memory system, i.e. all ongoing accesses must have
+terminated and their acknowledgment must have been received by the L1D cache
+before \texttt{fence} can progress to E2 and let another instruction enter E1.
+It can be used after a \texttt{wpurge} instruction, or after a \texttt{sdu}
+instruction for example to make sure that the memory has been updated before
+executing other \texttt{LSU} instructions. Its execution latency is entirely 
+dependent on the dynamic context of the memory system at the point of its entrance at E1.
+
+\subsection{Instruction Cache Maintenance Instructions}
+
+\texttt{iinval} invalidates all the icache lines instantaneously (execution
+latency: 1 cycle, total L1D cache busy: 0)\\
+
+\texttt{iinvall} invalidates one icache set instantaneously (execution latency:
+1 cycle, total L1D cache busy: 0)
+
+\newpage
+\section{BCU Instruction Particularities}
+\subsection{Branches}
+
+Branch instructions are divided in two categories: those that branch at ID and those that branch at RR.\\
+The instructions that branch at ID incur a 1-cycle branch penalty because the
+PFB is flushed and a new request to the L1I cache is made at the branch address (if everything goes well, a new bundle will be ready to execute 2 cycles later). They are:
+\begin{itemize}
+\item \texttt{break}
+\item \texttt{call}
+\item \texttt{goto}
+\item \texttt{ret}
+\item \texttt{rfe}
+\item \texttt{scall}
+\item \texttt{trap*}
+\item \texttt{loopgtz} under certain conditions
+\item \texttt{loopnez} under certain conditions
+\end{itemize}
+
+\texttt{loopnez} and \texttt{loopgtz} branch at ID if the hardware loop start condition is not fulfilled: the loop body must then be skipped, hence the branch.\\
+
+The instructions that branch at RR incur a 2-cycles branch penalty because the
+PFB is flushed and a new request to the L1I cache is made at the branch address plus the ID stage is canceled. They are:
+\begin{itemize}
+\item \texttt{cb}
+\item \texttt{icall}
+\item \texttt{igoto}
+\end{itemize}
+
+\subsection{Pipeline Flushes}
+Some \texttt{BCU} instructions need to have a clean pipeline downstream to start
+executing. They will stall at ID stage until there is no valid bundle left at
+RR, E1, E2, E3 and E4 (though there might still be pending streaming loads in
+the streaming loads FIFO). Such instructions may remain stalled at ID as little
+as 0 cycle (if the pipeline is already free in front of them), or as long as
+several hundred cycles (e.g. if the pipeline is full of unlucky load misses that
+are going to be unfavorably arbitrated in the memory system). However, long
+stalls coming from load misses were going to happen and block the pipeline
+anyway so it is not really fair to count them in this manner. For a typical
+case, these instructions are responsible for an extra 5 cycles stall (the time
+that the bundle that is at RR when they first enter ID executes and leaves the
+pipeline). These 5 cycles of stall come in addition to the potential branch
+penalty of the instruction, as is the case for \texttt{rfe} for example. These
+instructions are: \begin{itemize} \item \texttt{writetlb} \item \texttt{readtlb}
+\item \texttt{probetlb} \item \texttt{indexjtlb} \item \texttt{indexltlb} \item
+\texttt{barrier} \item \texttt{idle*} \item \texttt{break} \item \texttt{rfe}
+\item \texttt{scall} \item \texttt{trap*} \item \texttt{hfx*/set} on PS \item
+\texttt{loop*} \end{itemize}
+
+In addition, \texttt{idle*} and \texttt{barrier} instructions wait until:
+\begin{itemize}
+\item L1I cache / memory system traffic is over;
+\item L1D cache / memory system traffic is over;
+\item and the streaming load FIFO is empty.
+\end{itemize}
+
+Furthermore, \texttt{scall} and \texttt{loop*} cannot stall 0 cycle, they always stall at least 1 cycle at ID (for hardware optimization reasons).
+
+\subsection{Re-Fetches}
+
+Some \texttt{BCU} instructions trigger a refetch behind them: that is they branch to the next PC, which has the effect of flushing the PFB and causes an additional 1 cycle stall. This is the case of:
+\begin{itemize}
+\item \texttt{barrier}
+\item \texttt{writetlb}
+\item \texttt{invalitlb}
+\item \texttt{hfx*/set} on PS
+\item \texttt{loop*} under certain conditions
+\end{itemize}
+
+Hardware loop instructions (\texttt{loop*}) trigger a refetch when their loop
+body (pcoff17 = LE - \texttt{loop*} PC, as defined in the \KArchitecture) is
+strictly smaller than 64 bytes (because the PFB might have fetched ahead beyond
+the loop end as it was not yet aware that we were in a hardware loop).
+
+
+\newpage
+\section{Prefetch Buffer Effects}
+
+The prefetch buffer (PFB) is the unit that is in charge of fetching the code in
+the instruction cache (L1I cache) and presenting the syllables to the pipeline
+at the output of its FIFOs. The ID stage, using the data from the PFB FIFOs will
+in turn form the bundles, dispatch the instructions to the decoders of the
+related EXUs and perform part of the instruction decoding. If ID is not stalled
+and a valid bundle could be formed, then the corresponding code syllables will
+be popped out of the PFB FIFO and the bundle will progress to RR on the next
+clock edge.
+
+The PFB has no conscience of what a bundle is (or what instructions are) and its
+requests to the L1I cache do not have any correlation with bundle borders.
+Simplifying a little, its interface with the L1I cache consists of a simple
+request/grant $\rightarrow$ answer protocol plus address and data signals.
+
+In the first phase of this protocol, the PFB asks for 128bits of data at a
+32-bit aligned address (these ``data'' are code in fact but, from the PFB point
+of view, it really looks like raw data). When the L1I cache grants the request
+(handshake), the PFB can present a new request, either continuing sequentially
+(so that address 2 = address 1 + 16 bytes) or branching to a new address, for
+example on order of the BCU.
+
+In the second phase, the L1I cache answers in one or several cycles, indicating
+each time which parts of its return data bus are valid (1 valid bit per 32-bit
+word). The PFB must accept the data coming back. As a matter of fact, it will
+push every valid 32-bit word sent by the L1I cache into one of its 4 FIFOs (according to their alignment).
+
+The PFB features 4 32-bit wide / 3 stages deep FIFOs that hold the code
+syllables before they are popped out and progress down the pipeline as a bundle.
+In the nominal case where the L1I cache hits and no L1I cache line is crossed,
+the PFB receives the full 128-bit of data it asked for on the cycle following
+the request (valid bits = 0xf). If the bundles are 16-byte wide (= 128 bits = 4
+* 32 bits = 4 * 1-syllable instructions), the PFB will ask 128 bits per cycle to
+the L1I cache (L1I cache stage1), receive 128 bits per cycle from it and push
+them into its FIFOs (L1I cache stage2), and the pipeline will pop 128 bits per
+cycle out of the FIFOs. Thus we reach a steady state with a throughput of 4 *
+32-bit syllables of code fetched by cycle. This nominal case is illustrated in
+the figure below where each cross represents a 32 bits syllable\\\\
+
+\noindent
+\begin{tabular} {P{1.8cm} | R{0.6cm} P{1.1cm} | P{0.6cm} | P{0.6cm} | P{0.6cm} | P{1cm} | P{1cm}}
+\hline
+\textbf{L1I cache st 1} & \multicolumn{2}{c}{\textbf{L1I cache st 2}} & \multicolumn{3}{|c}{\textbf{PFB FIFOs}} & \textbf{ID} & \textbf{RR}\\
+\small{(handshake)} & \multicolumn{2}{c}{\small{(answer)}} & \multicolumn{3}{|c}{} & & \\
+\hline
+\cline{4-6}
+& x & & & & x & &\\
+\cline{4-6}
+request 4 & x & push 4 & & & x & pop 4 & \\
+\cline{4-6}
+$\Longrightarrow$ & x & $\Longrightarrow$ & & & x & $\Longrightarrow$ & \\
+\cline{4-6}
+& x & & & & x & & \\
+\cline{4-6}
+\end{tabular}
+\bigskip
+
+\subsection{L1I cache Line Crossing Penalty}
+\label{sec:ic_line_crossing}
+When the \KCore branches, the PFB FIFOs are flushed (because the PFB usually fetched
+some code ahead of time in a linear progression and this code is not wanted
+anymore) and a new 128 bits request is made to the L1I cache at the branch
+address. This address is 32 bits aligned but it does not have to be 128 bits (16
+bytes) aligned. As a result, if the branch address is not 16-byte aligned,
+given that the PFB fetches 16 bytes at a time, an L1I cache line is going to be
+crossed sooner or later, meaning the 16 bytes requested by the PFB will overlap
+a L1I cache line border.
+
+When this happens (and it is bound to happen quite quickly in the absence of a
+second branch as L1I cache lines are 64-byte wide), the L1I cache will only
+return the 32 bits syllables that reside in the same line as the start address
+of the request. For example if the PFB requests 128 bits starting at address
+0x10034 and the L1I cache hits, then the L1I cache will answer at the next cycle
+with valid bits at 0xe, indicating that it could only provide 32-bits syllables
+lying at 0x10034, 0x10038 and 0x1003C, the remaining one being beyond the L1I
+cache line border. It is then the responsibility of the PFB to issue a new
+request starting at the beginning of the new line (0x10040 in our example).
+
+The PFB request address (distinct from the PC) thus realigns itself on 128-bits
+and the situation is back to normal, however there was a cycle during which we
+only retrieved 96 bits instead of the usual 128 bits. So we ``lost the
+occasion'' to fetch one syllable. This loss can go up to 3 syllables in case the
+branch is made to an address ending in 0xc. This could in turn lead to a bubble
+in the pipeline if we were not capable to feed it with code (starvation).
+
+The following series of figure illustrates the case where a ID branch (such as a
+\texttt{call}) is made to the address 0x23C.  Here is an example of code that
+leads to such a situation:
+
+\begin{lstlisting}
+make $r0 = 0xa
+sw 0[$r12] = $r34
+call my_func    ## branch at ID
+;;
+my_func:        ## this is a 4 syllables bundle
+add $r0 = $r0, $r1
+xor $r3 = $r4, $r5
+sbf $r40 = $r34, $r38
+lw $r32 = 0[$r2]
+;;
+\end{lstlisting}
+
+State of the L1I cache/PFB at cycle 0 (cycle of the branch): PFB FIFOs are
+flushed, 4 syllables are requested to the L1I cache at 0x23C.\\
+
+\noindent
+\begin{tabular} {P{1.8cm} | R{0.6cm} P{1.1cm} | P{0.6cm} | P{0.6cm} | P{0.6cm} | P{1cm} | P{1cm}}
+\hline
+\textbf{L1I cache st 1} & \multicolumn{2}{c}{\textbf{L1I cache st 2}} & \multicolumn{3}{|c}{\textbf{PFB FIFOs}} & \textbf{ID} & \textbf{RR}\\
+\small{(handshake)} & \multicolumn{2}{c}{\small{(answer)}} & \multicolumn{3}{|c}{} & & \\
+\hline
+\cline{4-6}
+request 4 & \sout{x} & & & & x & pop 1 & \\
+\cline{4-6}
+@ 0x23C & \sout{x} & flush ! & & & x & $\Longrightarrow$ & \\
+\cline{4-6}
+$\Longrightarrow$ & \sout{x} & \sout{$\Longrightarrow$} & & & x & call !& make \\
+\cline{4-6}
+& \sout{x} & & & & x & & sw\\
+\cline{4-6}
+\end{tabular}
+\bigskip
+
+State of the L1I cache/PFB at cycle 1: the L1I cache only gives us 1 syllable back, ID wants to pop 4 syllables but 0 are available, so ID is starved.\\
+
+\noindent
+\begin{tabular} {P{1.8cm} | R{0.6cm} P{1.1cm} | P{0.6cm} | P{0.6cm} | P{0.6cm} | P{1cm} | P{1cm}}
+\hline
+\textbf{L1I cache st 1} & \multicolumn{2}{c}{\textbf{L1I cache st 2}} & \multicolumn{3}{|c}{\textbf{PFB FIFOs}} & \textbf{ID} & \textbf{RR}\\
+\small{(handshake)} & \multicolumn{2}{c}{\small{(answer)}} & \multicolumn{3}{|c}{} & & \\
+\hline
+\cline{4-6}
+request 4 & & & & & & & \\
+\cline{4-6}
+@ 0x240 & & push 1 & & &  & \textcolor{Red}{starved} & \\
+\cline{4-6}
+$\Longrightarrow$ &  & $\Longrightarrow$ & & & & & call \\
+\cline{4-6}
+& x & & & & & & \\
+\cline{4-6}
+\end{tabular}
+\bigskip
+
+State of the L1I cache/PFB at cycle 2: the PFB FIFOs contain only 1 syllable but ID wants to pop 4, so ID is starved, bubble at RR.\\
+
+\noindent
+\begin{tabular} {P{1.8cm} | R{0.6cm} P{1.1cm} | P{0.6cm} | P{0.6cm} | P{0.6cm} | P{1cm} | P{1cm}}
+\hline
+\textbf{L1I cache st 1} & \multicolumn{2}{c}{\textbf{L1I cache st 2}} & \multicolumn{3}{|c}{\textbf{PFB FIFOs}} & \textbf{ID} & \textbf{RR}\\
+\small{(handshake)} & \multicolumn{2}{c}{\small{(answer)}} & \multicolumn{3}{|c}{} & & \\
+\hline
+\cline{4-6}
+request 4 & x & & & & & & \\
+\cline{4-6}
+@ 0x250 & x & push 4 & & &  & \textcolor{Red}{starved} & \\
+\cline{4-6}
+$\Longrightarrow$ & x & $\Longrightarrow$ & & & & & \textcolor{Red}{bubble} \\
+\cline{4-6}
+& x & & & & x & & \\
+\cline{4-6}
+\end{tabular}
+\bigskip
+
+State of the L1I cache/PFB at cycle 3: the PFB FIFOs contain 5 syllables. ID can
+finally execute and 4 syllables will be popped out of the PFB FIFOs at the end
+of the cycle. \\
+
+\noindent
+\begin{tabular} {P{1.8cm} | R{0.6cm} P{1.1cm} | P{0.6cm} | P{0.6cm} | P{0.6cm} | P{1cm} | P{1cm}}
+\hline
+\textbf{L1I cache st 1} & \multicolumn{2}{c}{\textbf{L1I cache st 2}} & \multicolumn{3}{|c}{\textbf{PFB FIFOs}} & \textbf{ID} & \textbf{RR}\\
+\small{(handshake)} & \multicolumn{2}{c}{\small{(answer)}} & \multicolumn{3}{|c}{} & & \\
+\hline
+\cline{4-6}
+request 4 & x & & & & x & pop 4 & \\
+\cline{4-6}
+@ 0x260 & x & push 4 & & & x & $\Longrightarrow$ & \\
+\cline{4-6}
+$\Longrightarrow$ & x & $\Longrightarrow$ & & & x & & \textcolor{Red}{bubble} \\
+\cline{4-6}
+& x & & & x & x & & \\
+\cline{4-6}
+\end{tabular}
+\bigskip
+
+With this sequence, we have created 2 holes in the pipeline instead of one
+usually for ID branches. The L1I cache line crossing penalty made us waste one
+cycle (indeed we could have resumed execution at cycle 2 if we had been able to
+fetch 4 syllables as usual instead of one).\\
+
+\subsection{Optimization Rules}
+
+Always align the beginning (that is the first bundle of the loop body, not
+the \texttt{loop*} instruction) of your hardware loops on a 16-byte boundary: if
+there are no branches inside the loop body, this will prevent a fetch request
+from overlapping two L1I cache lines, thus avoiding the L1I cache line crossing
+penalties. This is not hard to do and may gain a fair amount of cycles, depending on
+the size of the loop body and the bundling inside it.

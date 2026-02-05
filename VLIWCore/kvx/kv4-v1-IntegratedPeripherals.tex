@@ -1,0 +1,662 @@
+\section{Integrated Peripherals}
+
+\subsection{Interrupt Controller}
+
+\subsubsection{Interrupt Controller Overview}
+
+The \KalrayK core includes a hardware interrupt controller (ITC), with the
+following features: \begin{itemize}
+
+\item 32 independent interrupt sources, with priority management between the 32
+    interrupts allowing interrupt nesting.
+
+\item Fully configurable for each interrupt, with 2-bit priority level for each
+    privilege level (PL), and individual interrupt source enable bit.
+
+\item Interrupt status bit displaying the pending interrupts.
+
+\end{itemize}
+
+The \KalrayK core directly manages 32 interrupt lines. Among them, some are
+dedicated to hardware sources, while others are not and could be used by the software
+to implement virtual interrupts coming from virtual devices (raising interrupts
+by software is performed by writing to ILR). Table~\ref{table:it-wiring}
+summarizes the wired interrupt connections in the MPPA Coolidge processor.
+
+\begin{table}
+    \centering
+    \begin{tabular}{|l|l|} \hline
+        \textbf{IT} & \textbf{Source} \\ \hline
+        0 & Timer 0 \\
+        1 & Timer 1 \\
+        2 & Watchdog \\
+        3 & Performance monitors \\
+        4 & APIC line 0 \\
+        5 & APIC line 1 \\
+        6 & APIC line 2 \\
+        7 & APIC line 3 \\
+        12 & SECC error from memory system \\
+        13 & Arithmetic exception (carry and IEEE~754 flags) \\
+        16 & Data Asynchronous Memory Error (DAME), raised for DECC/DSYS errors \\
+        17 & CLI (Cache Line Invalidation) for L1D or L1I following
+        DECC/DSYS/Parity errors \\
+    \hline \end{tabular}
+    \caption{Wiring of interrupt lines.}
+    \label{table:it-wiring}
+\end{table}
+
+\subsubsection{Interrupt Triggering}
+
+Each of the 32 interrupt lines is owned by a particular PL, as configured in
+ITO. It also has a priority level, encoded in ILL (interrupt line level) on 2
+bits, that is relative to the owner privilege level (PL). The concatenation of
+the interrupt line owner PL (on the MSBs) and the interrupt line relative level
+(on the LSBs) forms a quadruplet of bits that defines the interrupt line
+“absolute priority”.  The interrupt controller then arbitrates between all the
+pending (ILR[i] = 1) and enabled (ILE[i] = 1) interrupts and submits the one
+with the highest absolute priority.  Then: \begin{itemize}
+
+    \item If the processor is currently running in a privileged mode that is
+        less privileged than the owner of the candidate interrupt, the interrupt
+        is always taken (regardless of PS.IE and PS.IL) and control is
+        transferred to the interrupt owner PL.
+
+    \item If the processor is currently running in a privileged mode that is
+        more privileged than the owner of the candidate interrupt, the interrupt
+        is not taken (regardless of PS.IE and PS.IL) and remains pending.
+
+    \item If the processor is currently running in the candidate interrupt’s
+        owner PL, the interrupt is taken if and only if PS.IE = 1 and
+        it\_rel\_level $>$ PS.IL, where ir\_rel\_level is the relative priority
+        level of the interrupt on 2 bits, as defined in ILL. If the interrupt is
+        taken, then a horizontal interrupt happens in the current PL.
+
+\end{itemize} This mechanism guarantees that: \begin{itemize}
+
+    \item A more privileged PL is always able to interrupt a less privileged
+        one.
+
+    \item A less privileged PL never interrupts a more privileged one.
+
+    \item Inside a given PL, interrupt nesting happens only in a controlled way,
+        using the PS.IE and PS.IL fields.
+
+\end{itemize}
+
+\subsubsection{ITC Control SFRs}
+
+The following SFRs control the behavior of the ITC:
+\begin{description}
+
+\item[ILR] is a 32-bit SFR. Each bit, when set, indicates that the corresponding interrupt line
+has a pending request.
+
+\item[ILE] is a 32-bit SFR. Each bit, when set, indicates that the corresponding interrupt line
+is enabled, so in case the corresponding ILR bit is set, the interrupt is
+eligible for arbitration.
+
+\item[ILL] is a 64-bit SFR that contains 32 bit-fields of 2 bits each. This
+    defines the priority of the corresponding interrupt for the current PL. The
+    absolute priority of an interrupt is computed as NOT(ITO.IT$<i>$)*4 + ILL.IT$<i>$.
+  
+
+\end{description}
+
+
+\subsection{Timers and Watchdog} \label{sec:real-time-control}
+The \KalrayK core provides two 64-bit general purpose timers, as well as 
+a dedicated Watchdog 64-bit counter. 
+
+\subsubsection{Timers Value Registers (T0V and T1V)}
+
+T0V and T1V registers contain the current value of the timers and are reset to 0x0.
+
+When a timer is enabled, it is decremented on each tick of the CPU clock,
+until it reaches 0. Upon the next tick, the timer value is loaded with its
+reload value (T0R or T1R), and the corresponding status bit is set in the TC register.
+
+\subsubsection{Timers Reload Registers (T0R and T1R)}
+
+T0R and T1R are the two 64-bit timers reload values, they are reset
+to 0x0.
+
+Upon tick of CPU clock, when a timer is equal to 0x0, the
+corresponding reload value is transferred to the timer.
+
+When such an underflow occurs, depending on a dedicated interrupt
+enable bit (located also in the TC register), a pulse on the corresponding
+interrupt line is generated.
+
+\subsubsection{Timers Control Register (TCR)}
+
+\input{Register-TCR}
+
+%\begin{table}[ht]
+%\begin{center}
+%\input{Register-TC}
+%\end{center}
+%\caption{RTC Timer Control Register.}
+%\label{table:TC}
+%\end{table}
+
+The TC register, also reset to 0x0, contains the following
+%fields, listed in Table~\ref{table:TC}: \begin{description}
+fields, listed below: \begin{description}
+
+\item[T0CE] Timer 0 Count Enable
+
+When set, enables T0 timer counting.
+
+\item[T1CE] Timer 1 Count Enable
+
+When set, enables T1 timer counting.
+
+\item[T0IE] Timer 0 Interrupt Enable
+
+When set, and if T0CE is also set, enables T0 interrupt generation.
+
+\item[T1IE] Timer 1 Interrupt Enable
+
+When set, and if T1CE is also set, enables T1 interrupt generation.
+
+\item[T0ST] Timer 0 Status
+
+T0 status bit, set automatically by hardware when T0 has expired.
+
+\item[T1ST] Timer 1 Status
+
+T1 status bit, set automatically by hardware when T1 has expired.
+
+\item[T0SI] Stop Timers in Idle
+
+When set, Timers 0 does not count when the core is in idle state (await, sleep or stop).
+
+\item[T1SI] Stop Timers in Idle
+
+When set, Timers 1 does not count when the core is in idle state (await, sleep or stop).
+
+\item[WCE] Watchdog Counting Enable
+
+Enables WDV counting.
+
+\item[WIE] Watchdog Interrupt Enable
+
+Enables the interrupt generation (IT(2) of RM core and PE cores) when
+the WDV register underflows (wraps back to 0x0).
+
+\item[WUI] Watchdog Underflow Inform
+
+Informs the control logic that an underflow occurs while the
+status bit is set (this is the watchdog function enable).
+
+\item[WUS] Watchdog Underflow Status
+
+This is a status bit (set on WDV underflow) which can be cleared only
+by software.
+
+\item[WSI] Watchdog Stop in Idle
+
+When set, the watchdog does not count when the core is in idle state (await, sleep or stop).
+
+\end{description}
+
+\subsubsection{Timers Programming}
+
+As an extra cycle is needed when a timer reaches 0x0, the duration
+between two underflows of a timer is equal to the reload value plus
+one. For example, a reload value of 9 will cause an underflow every 10
+ticks.
+
+Timer 0 interrupt is connected to the interrupt line 0 of the
+interrupt controller.
+
+Timer 1 interrupt is connected to the interrupt line 1 of the
+interrupt controller.
+
+
+\subsubsection{Watchdog Programming}
+
+The purpose of the Watchdog timer function is to allow detecting unexpected behavior,
+ such as software or hardware deadlocks.
+This watchdog timer function is implemented using several resources:
+\begin{itemize}
+
+\item WDV (Watchdog Value) holds the current watchdog counter value.  WDV is a
+64-bit counter, counting backwards on the clock ticks (it uses the same clock
+as the 2 timers, that is the main CPU clock). It can be modified through SET operations
+only (WFX* cannot be used), in privilege mode.
+
+\item WDR (Watchdog Reload) holds the watchdog reload value. WDR is a simple 64-bit
+register.  It can be modified through SET operations only (WFX* cannot be used),
+in privilege mode.
+
+\item Some bits of TC control the watchdog timer functions: \begin{itemize}
+  \item WCE (Watchdog Counting Enable) enables WDV counting.
+  \item WIE (Watchdog Interrupt Enable) enables the interrupt generation (IT(2) of RM core and PE cores) when
+the WDV register underflows (wraps back to 0x0).
+  \item WUI (Watchdog Underflow Inform) enables the control logic that an underflow occurs while the
+status bit is set (this is the watchdog function enable).
+  \item WUS (Watchdog Underflow Status) is a status bit (set on WDV underflow) which can be cleared only
+by software.
+  \end{itemize}
+
+\end{itemize}
+
+When TC configures the watchdog function (TC.WUI=1, TC.WCE=1, TC.WIE=1), then:
+\begin{itemize}
+
+\item On WDV underflow, TC.WUS is set, and the interrupt line 2 is
+asserted.
+
+\item WDV is reloaded with the WDR value, and restarts de-counting.
+
+\item The software (the interrupt routine for example) has to reset TC.WUS.
+
+\item If a new WDV underflow occurs before TC.WUS has been reset, then
+the control logic is informed, and: \begin{itemize}
+  \item The faulty core will come back to the reset state (and will restart
+executing its code if the wake-up conditions are met).
+  \item In case the faulty core is a PE, an interrupt will be sent to the
+Resource Manager, which will be able to identify the core through memory
+mapped resources.
+  \item In case the faulty core is the RM, no other core is aware of this
+situation.
+  \end{itemize}
+So, in order to prevent the watchdog to fire, TC.WUS has to be reset between
+every two WDV underflows.
+\end{itemize}
+
+The watchdog registers can also be used as a third simple timer.  For this
+purpose, if TC.WUI=0, TC.WCE=1, TC.WIE=1, then the interrupt line 2 will be
+asserted on WDV underflows. No extra actions will start if TC.WUS is set when
+WDV underflows again.
+
+
+
+\subsection{Performance Monitoring} \label{sec:perf-monitor}
+
+The \KalrayK core provides eight 64-bit counters that allow to monitor various
+performance events, with the ability to trigger interrupts on overflow.
+
+\subsubsection{Performance Monitor Counters}
+
+PM0, PM1, PM2, PM3, PM4, PM5, PM6 and PM7 registers contain the value of the counters of the performance
+monitors. If their trigger condition (depending on PMC value) is met, they are
+incremented (by one or more, depending on the selected event).
+
+The PMC register allows to configure the counters counting conditions.
+
+\subsubsection{Performance Monitor Count Registers (PM0 to PM7)}
+
+PM0, PM1, PM2, PM3, PM4, PM5, PM6 and PM7 are the eight 64-bit counters, they are reset to 0x0.
+
+\subsubsection{Performance Monitor Control Registers (PMC and PMC2)}
+
+\input{Register-PMC}
+
+\input{Register-PMC2}
+
+%\begin{table}[ht]
+%\begin{center}
+%\input{Register-PMC}
+%\end{center}
+%\caption{Cycle Count Control Register.}
+%\label{table:PMC}
+%\end{table}
+
+The PMC and PMC2 registers, contain the following
+fields: \begin{description}
+%fields, listed in Table~\ref{table:PMC}: \begin{description}
+
+\item[PM0C] PM0 Configuration
+
+Contains the code of the event counted by PM0.
+
+\item[PM1C] PM1 Configuration
+
+Contains the code of the event counted by PM1.
+
+\item[PM2C] PM2 Configuration
+
+Contains the code of the event counted by PM2.
+
+\item[PM3C] PM3 Configuration
+
+Contains the code of the event counted by PM3.
+
+\item[SAF] Saved Address From
+
+This 3-bit field is set by the HW with the index of the PM which has overflowed
+
+\item[SAV] Saved Address Valid
+
+This bit is automatically set by hardware when a performance monitor for which PM$<i>$IE bit is set overflows
+(i.e. increments by one or more and wraps from 0xFFFFFFFF\_FFFFFF.. to 0x00000000\_000000..) 
+When this happens:\begin{itemize}
+\item an interrupt is sent to the interrupt controller (on line 3)
+\item the four Performance Monitors stop counting and their current value remains ``frozen''
+\item PMC.SAT is set to the relevant value
+\item the PMSA register may receive an address / PC
+\end{itemize}
+The eight Performance Monitors will start counting again as soon as the software clears PM.SAV
+
+If a PM overflows while its PM$<i>$IE bit is not set or while PMC.SAV is already at 1, nothing happens:
+ the overflowing PM just wraps around silently to 0x00000000\_000000.. and continues counting. 
+The other PMs continue counting too, PMC.SAT is not set, PMSA is left untouched and no interrupt is sent.
+
+\item[PM0IE]
+
+Enables interrupt generation for PM0
+
+\item[PM1IE]
+
+Enables interrupt generation for PM1
+
+\item[PM2IE]
+
+Enables interrupt generation for PM2
+
+\item[PM3IE]
+
+Enables interrupt generation for PM3
+
+\item[SAT] Saved Address Type
+
+This 2-bit field is automatically set by the HW when PM.SAV = 0 and a performance monitor for which PM$<i>$IE bit 
+is set underflows. According to the nature of the counted event that caused the overflow, the PMSA register receives:
+\begin{itemize}
+\item the PC of the bundle that caused the overflowing event. In this case, PM.SAT is set to 10 (aka PC)
+\item an Address related to the event that caused the overflow. In this case, PM.SAT is set to 01 (aka A)
+\item nothing (PMSA left untouched). In this case, PM.SAT is set to 00 (aka None)
+\end{itemize}
+PM.SAT = 11 is a reserved value and will not be set by hardware.
+
+\item[PM4C] PM4 Configuration
+
+Contains the code of the event counted by PM4.
+
+\item[PM5C] PM5 Configuration
+
+Contains the code of the event counted by PM5.
+
+\item[PM6C] PM6 Configuration
+
+Contains the code of the event counted by PM6.
+
+\item[PM7C] PM7 Configuration
+
+Contains the code of the event counted by PM7.
+
+\item[PM4IE]
+
+Enables interrupt generation for PM4
+
+\item[PM5IE]
+
+Enables interrupt generation for PM5
+
+\item[PM6IE]
+
+Enables interrupt generation for PM6
+
+\item[PM7IE]
+
+Enables interrupt generation for PM7
+
+\end{description}
+
+The table below (Table~\ref{table:counting}) details all the events that can be counted by the kvx core, 
+with their associated code and behavior on overflow.
+
+\begin{table}
+\begin{tabularx}{\textwidth}{|l|l|X|l|X|}
+\hline
+Code & Name & Description & SAT & Comment \\ 
+\hline
+0 & PCC & Processor Clock Cycle & None & +1 at every clock cycle, even during idle modes.\\
+\hline
+1 & ICC & Idle Clock Cycle & None & +1 at every cycle during which the main clock is cut because of idle mode.\\
+\hline
+2 & EBE & Executed Bundle Event & PC & +1 for each bundle architecturally executed. Do not count bundles victim of a HW trap as they are not architecturally executed.\\
+\hline
+3 & ENIE & Executed N Instructions Event & PC & +n for each bundle architecturally executed, with n = number of “main syllables” (32 bits) that are not IMMX.\\
+\hline
+4 & ENSE & Executed N Syllables Event & PC & +n for each bundle architecturally executed, with n = number of 32 bits syllables in the bundle (included IMMX).\\
+\hline
+5 & ICHE & ICache Hit Event & A & +1 for each ICache hit (micro architectural: a single bundle may be responsible for +2).\\
+\hline
+6 & ICME & ICache Miss Event & A  & +1 for each true ICache miss (idem). Does not increment on uncached accesses. \\
+\hline
+7 & ICMABE & ICache Memory Accesses Burst Event & A & +1 each time the ICache requests a burst of data from the memory system, be it on a miss (refill) or because the access was uncached.\\
+\hline
+8 & MNGIC & Memory Not Granting Instruction cache access Cycle & None & +1 at every cycle during which the memory system does not grant an Instruction Cache access.\\
+\hline
+\end{tabularx}
+\caption{Performance counting conditions.}
+\label{table:counting}
+\end{table}
+
+\begin{table}
+\begin{tabularx}{\textwidth}{|l|l|X|l|X|}
+\hline
+Code & Name & Description & SAT & Comment \\ 
+\hline
+9 & MIMHE & MMU Instruction  Micro-TLB Hit Event & A & +1 for every fetch access that hits in I-uTLB.\\
+\hline
+10 & MIMME & MMU Instruction Micro-TLB Miss Event & A  & +1 for every fetch access that misses in I-uTLB.\\
+\hline
+11 & IATSC & Instruction Address Translation Stall Cycle & None & +1 at every cycle during which the ICache waits for an address translation from the MMU.\\
+\hline
+12 & FE & Fetch Event & None & +1 each time a PFB fetch request is granted by the ICache.\\
+\hline
+13 & PBSC & Prefetch Buffer Starvation Cycle & None & +1 at every cycle during which a PFB fetch request to the ICache is not granted by the latter.\\
+\hline
+14 & PNVC & Pipeline No Valid Cycle & None & +1 at every cycle during which the first stage of the pipeline (Fetch|ID) has no valid bundle to execute and the main clock is running 
+(not in idle mode).\\
+\hline
+15 & PSC & Pipeline Starvation Cycle & None & +1 at every cycle during which the first stage of the pipeline (Fetch|ID) has no valid bundle to execute and is not stalled by a bundle at RR, nor canceled by a downstream branch, and the main clock is running (not in idle mode)..\\
+\hline
+16 & TADBE & Taken Application Direct Branch Event & PC & +1 for each architecturally executed (not canceled by a later trap) direct branch that is taken (GOTO, CB, CALL, RET).\\
+\hline
+17 & TABE & Taken Application Branch Event & PC  & +1 for each architecturally executed (not canceled by a later trap) “applicative” branch that is taken (TADBE + ICALL, IGOTO).\\
+\hline
+18 & TBE & Taken Branch Event & None & +1 for each branch taken by the core (TABE + SCALL, ITs, HWtraps, re-fetches on BARRIER, TLBWRITE, etc.).
+Only automatic hardware loop branch-back are not counted as they never result in branch penalty cycles.\\
+\hline
+\end{tabularx}
+\caption{Performance counting conditions.}
+\label{table:counting}
+\end{table}
+
+\begin{table}
+\begin{tabularx}{\textwidth}{|l|l|X|l|X|}
+\hline
+Code & Name & Description & SAT & Comment \\ 
+\hline
+ 19 & MDMHE & MMU Data  Micro-TLB Hit Event & PC & +1 for every data access that hits in d-uTLB\\
+\hline
+ 20 & MDMME & MMU Data Micro-TLB Miss Event & PC & +1 for every data access that misses in d-uTLB\\
+\hline
+ 21 & DATSC & Data Address Translation Stall Cycle & None & +1 at every cycle during which the DCache (and pipeline) wait for an address translation from the MMU\\
+\hline
+ 22 & DCLHE & DCache Load Hit Event & PC & +1 for each architecturally executed load/dtouchl that hits in the L1 data cache (a bundle might be responsible for +2 if a misaligned load spans over two cache lines)
+ Does not increment if the load/dtouchl is canceled (e.g. by a MMU trap)\\
+\hline
+ 23 & DCHE & DCache Hit Event & PC & +1 for each architecturally executed load/DTOUCHL/store that hits in the L1 data cache (a bundle might be responsible for +2 if a misaligned load/store spans over two cache lines)
+ Does not increment if the access is canceled (e.g. by a MMU trap) or uncached\\
+\hline
+ 24 & DCLME & DCache Load Miss Event & PC  & +1 for each architecturally executed load/dtouchl that misses in the L1 data cache (a bundle might be responsible for +2 if a misaligned load spans over two cache lines)
+ Does not increment if the load/dtouchl is canceled (e.g. by a MMU trap) or uncached\\
+\hline
+ 25 & DCME & DCache Miss Event & PC  & +1 for each architecturally executed load/DTOUCHL/store that misses in the L1 data cache (a bundle might be responsible for +2 if a misaligned load/store spans over two cache lines)
+ Does not increment if the access is canceled (e.g. by a MMU trap) or uncached\\
+\hline
+\end{tabularx}
+\caption{Performance counting conditions.}
+\label{table:counting}
+\end{table}
+
+
+\begin{table}
+\begin{tabularx}{\textwidth}{|l|l|X|l|X|}
+\hline
+Code & Name & Description & SAT & Comment \\ 
+\hline
+26 & DARSC & Data Access Related Stall Cycle & None & +1 at every cycle during which a stage of the pipeline is stalled because of a data access. This encompasses cycles lost to:
+\begin{itemize}
+\item Waiting on r-a-w dependencies
+\item Waiting on MMU data translation
+\item Misalignment penalties
+\item DCache not granting because busy processing a miss or memory system unresponsive
+\item Outstanding loads CAM full
+\end{itemize}
+But not cycles lost to blocking uncached accesses nor FENCE (these are counted in SISC).\\
+\hline
+27 & LDSC & Load Dependency Stall Cycle & None & +1 at every cycle during which a stage of the pipeline is stalled because of a read-after-write dependency on an outstanding load.\\
+\hline
+28 & DCNGC & Data Cache Not Granting Cycle & None & +1 at every cycle during which the data cache does not grant data accesses (be there a data access request from the pipeline or not).\\
+\hline
+29 & DMAE & Data Misaligned Access Event & PC  & +1 for each misaligned access that results in a performance penalty: cached accesses crossing a cache line border + uncached accesses crossing a SMEM protocol word boundary.\\
+\hline
+30 & LCFSC & Load Cam Full Stall Cycle & None & +1 at every cycle during which the pipeline is stalled because the DCache outstanding load CAM is full.\\
+\hline
+\end{tabularx}
+\caption{Performance counting conditions.}
+\label{table:counting}
+\end{table}
+
+\begin{table}
+\begin{tabularx}{\textwidth}{|l|l|X|l|X|}
+\hline
+Code & Name & Description & SAT & Comment \\ 
+\hline
+31 & MNGDC & Memory Not Granting Data cache access Cycle & None & +1 at every cycle during which the memory system does not grant a Data Cache access.\\
+\hline
+32 & MACC & Memory Accesses Conflict Cycle & None & +1 at every cycle during which a memory request from the ICache conflicts with a memory request from the DCache at the input of the caches arbiter.\\
+\hline
+33 & TACC & TLB Accesses Conflict Cycle & None & +1 at every cycle during which a L2-TLB request from the data side or the instruction side is not granted by the L2-TLB because the latter is taking or processing a request from the other side, or a TLB management instruction (such as TLBWRITE).\\
+\hline
+34 & IWC & Idle Wait Cycle & None & +1 at every cycle during which an AWAIT/SLEEP/STOP instruction stalls the pipeline, waiting for a wake-up (be the main clock cut yet or not).\\
+\hline
+35 & WISC & Wait Instruction Stall Cycle & None & +1 at every cycle during which a WAITIT/SYNCGROUP instruction stalls in the pipeline, waiting for its unblocking condition to happen.\\
+\hline
+36 & SISC & Synchronization Instruction Stall Cycle & None & +1 at every cycle during which the pipeline is stalled because of the execution of a FENCE or BARRIER or uncached blocking load/store instruction.\\
+\hline
+37 & DDSC & Data Dependency Stall Cycle  & None & +1 at every cycle during which a stage of the pipeline is stalled because of a read-after-write dependency (including on pending loads: this is a superset of LDSC).\\
+\hline
+38 & SC & Stall Cycle & None & +1 at every cycle during which a stage of the pipeline is stalled, whatever the cause of the stall (all dependencies + synchronization instructions + pipeline flushes ...) and the main clock is running (not in idle mode).\\
+\hline
+\end{tabularx}
+\caption{Performance counting conditions.}
+\label{table:counting}
+\end{table}
+
+\begin{table}
+\begin{tabularx}{\textwidth}{|l|l|X|l|X|}
+\hline
+Code & Name & Description & SAT & Comment \\ 
+\hline
+39 & ELE & Executed Load Event & PC & +1 for each architecturally executed load, be it cached or not (does not increment on conditional loads whose condition is not met, does not increment on dtouchl).\\
+\hline
+40 & ELNBE & Executed Load N Bytes Event & PC & +n for each architecturally executed load be it cached or not, with n is the number of bytes loaded (idem).\\
+\hline
+41 & ELUE & Executed Load Uncached Event & PC & +1 for each architecturally executed uncached load (does not increment on conditional loads whose condition is not met).\\
+\hline
+42 & ELUNBE & Executed Load Uncached N Bytes Event & PC & +n for each architecturally executed uncached load, with n is the number of bytes loaded (idem).\\
+\hline
+43 & ESE & Executed Store Event & PC & +1 for each architecturally executed store (does not increment on conditional stores whose condition is not met).\\
+\hline
+44 & ESNBE & Executed Store N Bytes Event & PC & +n for each architecturally executed store, with n is the number of bytes stored.\\
+\hline
+45 & EAE & Executed Atomic Event & PC & +1 for each architecturally executed atomic instruction.\\
+\hline
+46 & CIRE & Coherency Invalidation Request Event & None & +1 each time the core receives a L1 DCache coherency line invalidation request from the directory.\\
+\hline
+47 & CIE & Coherency Invalidation Event & None & +1 each time the core invalidates a line after receiving a L1 DCache coherency line invalidation request from the directory (subset of CIRE as all invalidation requests may not trigger an invalidation).\\
+\hline
+\end{tabularx}
+\caption{Performance counting conditions.}
+\label{table:counting}
+\end{table}
+
+\begin{table}
+\begin{tabularx}{\textwidth}{|l|l|X|l|X|}
+\hline
+Code & Name & Description & SAT & Comment \\ 
+\hline
+48 & SE & Stop Event & None & STOP: Stops the counter.\\
+\hline
+49 & RE & Reset Event & None & RESET = Special event that forces counter to 0.\\
+\hline
+50 & FSC & Fetch Stall Cycle & None & +1 at every cycle during which a valid bundle is stalled at Fetch (ID) stage in the pipeline and the main clock is running (not in idle mode).\\
+\hline
+51 & CPIRE & Coherency Precise Invalidation Request Event & A & +1 each time the core receives a precise L1 DCache coherency line invalidation request from the directory. In case of overflow (and PM$<$i$>$IE = 1), the address whose invalidation is requested is written to PMSA.\\
+\hline
+52 & CPIE & Coherency Precise Invalidation Event & A & +1 each time the core invalidates a line after receiving a precise L1 DCache coherency line invalidation request from the directory (subset of CIRE as all invalidation requests may not trigger an invalidation). In case of overflow (and PM$<$i$>$IE = 1), the address whose invalidation is requested is written to PMSA.\\
+\hline
+53 & HUPEVICT & Hit-Under-Prefetch Eviction Event & None & +1 each time a line gets evicted of HUP module due to a prefetch (dtouchl) when the HUP CAM is full.\\
+\hline
+54 & HUPHIT & Hit-Under-Prefetch Hit Event & None & +1 each time the HUP starts transferring a line to the DCache.\\
+\hline
+55 & L2LM & L2 cache Load Miss event & PC & +1 each time a full cached (L1 + L2) load miss in L2 cache. Note that the load also miss in L1 cache to be requested to L2.\\
+\hline
+56 & L2LH & L2 cache Load Hit event & PC & +1 each time a full cached (L1 + L2) load hit in L2 cache. Note that the load also miss in L1 cache to be requested to L2.\\
+\hline
+57 & L2SM & L2 cache Store Miss event & A & +1 each time a full cached (L1 + L2) store miss in L2 cache. Note that the store could miss or hit in L1 cache (L1 cache is write through).\\
+\hline
+58 & L2SH & L2 cache Store Hit event & A & +1 each time a full cached (L1 + L2) store hit in L2 cache. Note that the store could miss or hit in L1 cache (L1 cache is write through).\\
+\hline
+59 & L2M & L2 cache Miss event & None & +1 each time an access miss in L2 cache.\\
+\hline
+60 & L2H & L2 cache Hit event & None & +1 each time an access hit in L2 cache.\\
+\hline
+\end{tabularx}
+\caption{Performance counting conditions.}
+\label{table:counting}
+\end{table}
+
+\newpage
+\subsection{On Chip Emulation (OCE)} \label{sec:on-chip-emulation}
+
+A \emph{cluster} is a set of \KalrayK cores that share the same memory.  At the
+cluster level a common debug unit, the \emph{Debug System Unit} (DSU), is shared
+between all the cores, and an external controlling host.  This shared approach
+allows to limit the area impact and the communication channel number between the
+cluster and the host.
+
+Each core implements resources dedicated to the debug mechanisms:
+\begin{itemize}
+\item SSPS and SSPC registers, containing copies of SPS and SPC
+  registers while diverting to debug handlers
+\item DV, the Debug Vector register, holding the base address of debug handlers
+\item OCE0 and OCE1, two general purpose SFRs dedicated to debug routine use
+\item OCEC and OCEA, two SFRs dedicated to debugger watchpoints.
+\end{itemize}
+Using these dedicated resources, debugging a core is a cooperative activity
+between the core and the host, using the DSU as communication mean.
+
+Please refer to the \clusterdoc document for further details on the OCE.
+
+
+
+\subsection{Cycle counter} \label{sec:cycle-cnt}
+
+The \KalrayK core provides one 64-bit cycle counter that allow to monitor time, event if the processor 
+is in idle state. This counter can be set to any value without ownership limitations, through SFR 
+\$FRCC (free running cycle counter).
+
+
+\subsection{Sequence Rupture helper PC} \label{sec:seq-rupture-helper-pc}
+
+The \KalrayK core provides an SFR that logs the PC where a PC sequence rupture occurs, which cannot be traced back 
+by other means. More specifically, this includes the following instructions:
+\begin{itemize}
+\item RET
+\item RFE
+\item GOTO
+\item IGOTO
+\item CB
+\end{itemize}
+
+The register is called SRHPC and is owner-protected through a field in \$mo.
+

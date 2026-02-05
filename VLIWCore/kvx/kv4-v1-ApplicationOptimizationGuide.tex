@@ -1,0 +1,475 @@
+\section{Application Optimization Guide}
+
+\subsection{Uses of the Bit Matrix Multiplies 8\texorpdfstring{$\times$}{x}8}
+
+\subsubsection{Bit Matrix 8\texorpdfstring{$\times$}{x}8 Transposition and Multiplication}
+
+Bit Matrix Multiplication instructions have initially been introduced in the
+Cray~Y-MP family of supercomputers \cite{Lee:1992:Patent}, and the usefulness of
+such instructions has recently been assessed for RISC ISA design
+\cite{Hilewitz:2008:ASAP}. The \KalrayK core includes instructions that perform
+bit-matrix multiplication and transposition on 64-bit words considered as
+8-bit$\times$8-bit matrices. Precisely, let a 64-bit unsigned integer composed
+of bytes $b_7\dots b_0$, where $b_7$ is the most significant byte and $b_0$ the
+least significant byte. This integer is interpreted as the following bit matrix:
+
+\[
+b_7\dots b_0
+\equiv
+\left ( \begin{array}{c}
+b_0 \\ b_1 \\ b_2 \\ b_3 \\ b_4 \\ b_5 \\ b_6 \\ b_7
+\end{array} \right )
+\equiv
+\left ( \begin{array}{cccccccc}
+b_0^0 & b_0^1 & b_0^2 & b_0^3 & b_0^4 & b_0^5 & b_0^6 & b_0^7 \\
+b_1^0 & b_1^1 & b_1^2 & b_1^3 & b_1^4 & b_1^5 & b_1^6 & b_1^7 \\
+b_2^0 & b_2^1 & b_2^2 & b_2^3 & b_2^4 & b_2^5 & b_2^6 & b_2^7 \\
+b_3^0 & b_3^1 & b_3^2 & b_3^3 & b_3^4 & b_3^5 & b_3^6 & b_3^7 \\
+b_4^0 & b_4^1 & b_4^2 & b_4^3 & b_4^4 & b_4^5 & b_4^6 & b_4^7 \\
+b_5^0 & b_5^1 & b_5^2 & b_5^3 & b_5^4 & b_5^5 & b_5^6 & b_5^7 \\
+b_6^0 & b_6^1 & b_6^2 & b_6^3 & b_6^4 & b_6^5 & b_6^6 & b_6^7 \\
+b_7^0 & b_7^1 & b_7^2 & b_7^3 & b_7^4 & b_7^5 & b_7^6 & b_7^7 \\
+\end{array} \right )
+\]
+
+In particular, given that the \KalrayK core is little-endian (like the Intel
+ia32) the encoding of the identity 8$\times$8 bit matrix in a 64-bit word is
+\texttt{0x8040201008040201}.
+
+Let \texttt{bmt8x8} be the bit matrix transposition on 8-bit$\times$8-bit
+matrices. The effects of this function, whose C implementation appears in
+Figure~\ref{fig:refbmm8}, are defined as follows:
+
+\[
+\hbox{\texttt{bmt8x8}}(
+\left ( \begin{array}{c}
+b_0 \\ b_1 \\ b_2 \\ b_3 \\ b_4 \\ b_5 \\ b_6 \\ b_7
+\end{array} \right )
+) =
+\left ( \begin{array}{cccccccc}
+b_0^0 & b_1^0 & b_2^0 & b_3^0 & b_4^0 & b_5^0 & b_6^0 & b_7^0 \\
+b_0^1 & b_1^1 & b_2^1 & b_3^1 & b_4^1 & b_5^1 & b_6^1 & b_7^1 \\
+b_0^2 & b_1^2 & b_2^2 & b_3^2 & b_4^2 & b_5^2 & b_6^2 & b_7^2 \\
+b_0^3 & b_1^3 & b_2^3 & b_3^3 & b_4^3 & b_5^3 & b_6^3 & b_7^3 \\
+b_0^4 & b_1^4 & b_2^4 & b_3^4 & b_4^4 & b_5^4 & b_6^4 & b_7^4 \\
+b_0^5 & b_1^5 & b_2^5 & b_3^5 & b_4^5 & b_5^5 & b_6^5 & b_7^5 \\
+b_0^6 & b_1^6 & b_2^6 & b_3^6 & b_4^6 & b_5^6 & b_6^6 & b_7^6 \\
+b_0^7 & b_1^7 & b_2^7 & b_3^7 & b_4^7 & b_5^7 & b_6^7 & b_7^7 \\
+\end{array} \right )
+\]
+
+Let \texttt{bmm8x8} be the bit matrix multiplication of 8-bit$\times$8-bit
+matrices. The effects of this function, whose C implementation also appears in
+Figure~\ref{fig:refbmm8}, are defined as follows:
+
+\[
+\hbox{\texttt{bmm8x8}}(
+\left ( \begin{array}{c}
+a_0 \\ a_1 \\ a_2 \\ a_3 \\ a_4 \\ a_5 \\ a_6 \\ a_7
+\end{array} \right ),
+\left ( \begin{array}{c}
+b_0 \\ b_1 \\ b_2 \\ b_3 \\ b_4 \\ b_5 \\ b_6 \\ b_7
+\end{array} \right )
+) =
+\left ( \begin{array}{c}
+a_0^0 b_0 \otimes a_0^1 b_1 \otimes a_0^2 b_2 \otimes a_0^3 b_3 \otimes a_0^4 b_4 \otimes a_0^5 b_5 \otimes a_0^6 b_6 \otimes a_0^7 b_7 \\
+a_1^0 b_0 \otimes a_1^1 b_1 \otimes a_1^2 b_2 \otimes a_1^3 b_3 \otimes a_1^4 b_4 \otimes a_1^5 b_5 \otimes a_1^6 b_6 \otimes a_1^7 b_7 \\
+a_2^0 b_0 \otimes a_2^1 b_1 \otimes a_2^2 b_2 \otimes a_2^3 b_3 \otimes a_2^4 b_4 \otimes a_2^5 b_5 \otimes a_2^6 b_6 \otimes a_2^7 b_7 \\
+a_2^0 b_0 \otimes a_2^1 b_1 \otimes a_2^2 b_2 \otimes a_2^3 b_3 \otimes a_2^4 b_4 \otimes a_2^5 b_5 \otimes a_2^6 b_6 \otimes a_2^7 b_7 \\
+a_4^0 b_0 \otimes a_4^1 b_1 \otimes a_4^2 b_2 \otimes a_4^3 b_3 \otimes a_4^4 b_4 \otimes a_4^5 b_5 \otimes a_4^6 b_6 \otimes a_4^7 b_7 \\
+a_5^0 b_0 \otimes a_5^1 b_1 \otimes a_5^2 b_2 \otimes a_5^3 b_3 \otimes a_5^4 b_4 \otimes a_5^5 b_5 \otimes a_5^6 b_6 \otimes a_5^7 b_7 \\
+a_6^0 b_0 \otimes a_6^1 b_1 \otimes a_6^2 b_2 \otimes a_6^3 b_3 \otimes a_6^4 b_4 \otimes a_6^5 b_5 \otimes a_6^6 b_6 \otimes a_6^7 b_7 \\
+a_7^0 b_0 \otimes a_7^1 b_1 \otimes a_7^2 b_2 \otimes a_7^3 b_3 \otimes a_7^4 b_4 \otimes a_7^5 b_5 \otimes a_7^6 b_6 \otimes a_7^7 b_7 \\
+\end{array} \right )
+\]
+
+Here, $\otimes$ denotes the exclusive or operation applied on 8-bit operands.
+Each operand takes the form $a_i^j b_j$, which applies the logical and of bit
+$a_i^j$ to each of the 8 bits of $b_j$.
+
+\begin{figure}
+\begin{minipage}{.48\textwidth}
+{\scriptsize
+\begin{lstlisting}
+/** Bit matrix transpose 8x8 */
+uint64_t
+bmt8x8(uint64_t a)
+{
+  int i, j;
+  uint64_t b = 0;
+  for (i = 0; i < 8; i++) {
+    for (j = 0; j < 8; j++) {
+      if (a & 0x1) {
+        b ^= (uint64_t)0x1 << (j*8) + i;
+      }
+      a >>= 1;
+    }
+  }
+  return b;
+}
+\end{lstlisting}
+}
+\end{minipage}
+\hfill
+\begin{minipage}{.48\textwidth}
+{\scriptsize
+\begin{lstlisting}
+/** Bit matrix multiply 8x8 */
+uint64_t
+bmm8x8(uint64_t a, uint64_t b)
+{
+  int i, j;
+  uint64_t c = 0;
+  for (i = 0; i < 8; i++) {
+    for (j = 0; j < 8; j++) {
+      if (a & 0x1) {
+        c ^= ((b>>(j*8))&0xFF) << i*8;
+      }
+      a >>= 1;
+    }
+  }
+  return c;
+}
+\end{lstlisting}
+}
+\end{minipage}
+\caption{Reference C codes for the \texttt{bmt8x8} and \texttt{bmm8x8} functions.}
+\label{fig:refbmm8}
+\end{figure}
+
+\subsubsection{\KalrayK Bit Matrix 8\texorpdfstring{$\times$}{x}8 Instructions}
+
+The \KalrayK core provides bit matrix multiplication instructions named
+\texttt{sbmm8} for Swapped Bit Matrix Multiply 8$\times$8 and \texttt{sbmmt8}
+for Swapped Bit Matrix Multiply Transposed 8$\times$8. These instructions are
+defined as follows:
+
+\[
+\begin{array}{l}
+\hbox{\texttt{sbmm8}}(a, b) = \hbox{\texttt{bmm8x8}}(b, a) \\
+\hbox{\texttt{sbmmt8}}(a, b) = \hbox{\texttt{bmt8x8}}(\hbox{\texttt{bmm8x8}}(b, a)) \\
+\end{array}
+\]
+
+The reason for swapping the bit matrix multiplication operands in the \KalrayK
+core instructions is motivated by the fact that immediate value operands
+are always the rightmost at the assembly language level. However, the majority
+of cases where an immediate value is useful in bit matrix multiplication is as
+the first (leftmost) operands.
+
+The \KalrayK core support immediate operands up to 64-bit for ALU
+instructions.  This yields two variants of each bit matrix
+multiply instruction, for instance in case of \texttt{sbmm8}:
+
+\begin{lstlisting}
+    sbmm8 $r0 =$r2, $r3
+    ;;
+    sbmm8 $r4 =$r5, 0x8040201008040201
+    ;;
+\end{lstlisting}
+
+At the C source level, the bit matrix multiplications and other special
+instructions of the \KalrayK core are available as \emph{intrinsic functions},
+whose use can be optimized by the compiler like regular arithmetic instructions.
+The C prototypes for the bit matrix multiplications builtins are:
+
+{
+\begin{lstlisting}
+  long long __builtin_kvx_sbmm8d(long long, long long);
+  long long __builtin_kvx_sbmmt8d(long long, long long);
+\end{lstlisting}
+}
+
+
+\subsubsection{Byte and Half-Word Manipulations}
+
+A bit matrix multiplication 8$\times$8 can be interpreted as constructing each
+byte of the 64-bit result by ANDing each byte of the rightmost operand $b$ with a
+bit of the leftmost operand $a$, and XORing the results. Whenever each byte
+$a_i$ of operand $a$ contain only one bit set, this bit selects the byte of
+operand $b$ to be written. For instance, to perform a byte swap of a 64-bit
+word, we use the constant \texttt{0x0102040810204080} for operand $a$:
+
+\[
+\hbox{\texttt{0x0102040810204080}}
+\equiv
+\left ( \begin{array}{l}
+\hbox{\texttt{0x80}} \\
+\hbox{\texttt{0x40}} \\
+\hbox{\texttt{0x20}} \\
+\hbox{\texttt{0x10}} \\
+\hbox{\texttt{0x08}} \\
+\hbox{\texttt{0x04}} \\
+\hbox{\texttt{0x02}} \\
+\hbox{\texttt{0x01}} \\
+\end{array} \right )
+=
+\left ( \begin{array}{l}
+1 << 7 \\
+1 << 6 \\
+1 << 5 \\
+1 << 4 \\
+1 << 3 \\
+1 << 2 \\
+1 << 1 \\
+1 << 0 \\
+\end{array} \right )
+\equiv
+\left ( \begin{array}{l}
+\hbox{Select byte 7} \\
+\hbox{Select byte 6} \\
+\hbox{Select byte 5} \\
+\hbox{Select byte 4} \\
+\hbox{Select byte 3} \\
+\hbox{Select byte 2} \\
+\hbox{Select byte 1} \\
+\hbox{Select byte 0} \\
+\end{array} \right )
+\]
+
+With the \texttt{sbmm8} instruction, the first operand of the bit matrix
+multiplication 8$\times$8 appears on the right hand side, so we can take
+advantage of the 64-bit immediate constants:
+
+\begin{lstlisting}
+    sbmm8 $r0 =$r1, 0x0102040810204080  # Byte swap in 64-bit word
+    ;;
+\end{lstlisting}
+
+In Table~\ref{table:byteconstants}, we collect some useful immediate constants
+of the \texttt{sbmm8} instruction that achieve common byte and half-word
+manipulations.
+
+\begin{table}
+\centering
+\begin{tabular}{|l|l|} \hline
+Constant & Effects \\ \hline
+\texttt{0x8040201008040201} & Identity bit matrix \\
+\texttt{0x0000000001020408} & Byte swap in 32-bit value \\
+\texttt{0x0000000002010804} & Half swap in 32-bit value \\
+\texttt{0x0102040810204080} & Byte swap in 64-bit value \\
+\texttt{0x0201080420108040} & Half swap in 64-bit value \\
+\texttt{0x0804020180402010} & Word swap in 64-bit value \\
+\texttt{0x8008400420021001} & Byte mix in 64-bit value \\
+\texttt{0x8020080240100401} & Reverse byte mix in 64-bit value \\
+\texttt{0x4020100804020180} & Rotate left 8 bits in 64-bit value \\
+\texttt{0x2010080402018040} & Rotate left 16 bits in 64-bit value \\
+\texttt{0x1008040201804020} & Rotate left 24 bits in 64-bit value \\
+\texttt{0x0101010101010101} & Splat byte 0 to 64-bit value \\
+\texttt{0x0201020102010201} & Splat half 0 to 64-bit value \\
+\texttt{0x0804020108040201} & Splat word 0 to 64-bit value \\
+\hline \end{tabular}
+\label{table:byteconstants}
+\caption{Immediate constants for byte and half-word
+manipulations with the \texttt{sbmm8} instruction.}
+\end{table}
+
+
+\subsubsection{Parallel Bit Manipulations}
+
+Another interpretation of the bit matrix multiplication 8$\times$8 is that each
+bit $a_i^j$ of the leftmost operand $a$ is contributed to byte $i$ of the result
+according to the bit pattern supplied by byte $b_j$ of the rightmost operand
+$b$. The same contribution pattern applied in parallel to the eight bytes of
+operand $a$. For instance, a parallel bit reverse of each byte of $a$ is
+achieved when the constant \texttt{0x0102040810204080} is supplied as operand
+$b$:
+
+\[
+\hbox{\texttt{0x0102040810204080}}
+\equiv
+\left ( \begin{array}{l}
+\hbox{\texttt{0x80}} \\
+\hbox{\texttt{0x40}} \\
+\hbox{\texttt{0x20}} \\
+\hbox{\texttt{0x10}} \\
+\hbox{\texttt{0x08}} \\
+\hbox{\texttt{0x04}} \\
+\hbox{\texttt{0x02}} \\
+\hbox{\texttt{0x01}} \\
+\end{array} \right )
+=
+\left ( \begin{array}{l}
+1 << 7 \\
+1 << 6 \\
+1 << 5 \\
+1 << 4 \\
+1 << 3 \\
+1 << 2 \\
+1 << 1 \\
+1 << 0 \\
+\end{array} \right )
+\equiv
+\left ( \begin{array}{l}
+\hbox{Copy bit 0 to bit 7} \\
+\hbox{Copy bit 1 to bit 6} \\
+\hbox{Copy bit 2 to bit 5} \\
+\hbox{Copy bit 3 to bit 4} \\
+\hbox{Copy bit 4 to bit 3} \\
+\hbox{Copy bit 5 to bit 2} \\
+\hbox{Copy bit 6 to bit 1} \\
+\hbox{Copy bit 7 to bit 0} \\
+\end{array} \right )
+\]
+
+Because the \KalrayK core only allows immediate operands in the leftmost
+position, the immediate constant must be created first in a register:
+
+\begin{lstlisting}
+    make $r1 = 0x0102040810204080
+    ;;
+    sbmm8 $r0 = $r1, $r2
+    ;;
+\end{lstlisting}
+
+Bit reversing is more useful when applied to data formats wider than a byte.
+In such cases, the parallel bit-reverse in a byte can be combined with a byte
+reverse in a double word, yielding the following expression for bit-reversing a
+64-bit (unsigned) integer:
+
+\begin{eqnarray*}
+\hbox{bit-reverse}(a) & = \quad \hbox{bmm8x8}(& \hbox{\texttt{0x0102040810204080}}, \\
+                      &                 & \hbox{bmm8x8}(a, \hbox{\texttt{0x0102040810204080}})) \\
+\end{eqnarray*}
+
+In FFT applications, bit reversing is usually applied to a range of
+\texttt{l2n} bits inside a 32-bit (unsigned) integer, where \texttt{l2n} is the
+base-2 logarithm of the number of points of the FFT. This leads to the
+following \texttt{bitrev} implementation:
+
+\begin{lstlisting}
+static inline unsigned
+bitrev(unsigned in, unsigned l2n)
+{ 
+  unsigned long long cst = 0x0102040810204080ULL;
+  unsigned long long r1 = __builtin_kvx_sbmm8d(cst, in);
+  unsigned long long r2 = __builtin_kvx_sbmm8d(r1, cst);
+  return r2 >> (64 - l2n);
+}       
+\end{lstlisting}
+
+As a side note, one should be aware that radix-4 of higher radix Cooley-Tukey
+in-place FFT implementations can be adapted without run-time cost to used
+bit-reversing instead of digit reversing, thanks to the observation published
+in 1988 by C.  S. Burrus.
+
+%Another useful application of parallel bit manipulations with bit matrix
+%multiplication is the bit interleaving and de-interleaving.
+
+
+\subsubsection{Multiplication by Constants in GF(\texorpdfstring{$2^8$}{2**8})}
+
+In general, multiplication in a GF($2^m$) field under a polynomial
+representation requires that a carry-less multiplication is performed, followed
+by computing the remainder modulo the irreducible polynomial. The remainder
+computation amounts to canceling the high-order bits of the carry-less
+multiplication result by xoring them with the shifted values of the irreducible
+polynomial until all bits at position greater than or equal to $n$ are zero.
+
+Whenever one of the multiplication operands is constant, it is possible to
+replace this sequence of steps by a simple $n\times n$ bit matrix
+multiplication. Precisely, given the irreducible polynomial of a polynomial
+basis of GF($2^m$) and the constant operand, the Mastrovito algorithm
+\cite{Mastrovito:1989:LNCS} computes the bit matrix entries. Details of the
+matrix generation are discussed for instance by Paar in~\cite{Paar:1996:IEEETC}.
+
+\begin{table}
+\centering
+\begin{tabular}{|r|r|} \hline
+Constant & Multiplication matrix\\ \hline
+ \texttt{0x00} & \texttt{0x0000000000000000}\\
+ \texttt{0x01} & \texttt{0x8040201008040201}\\
+ \texttt{0x02} & \texttt{0x4020108884028180}\\
+ \texttt{0x03} & \texttt{0xc06030988c068381}\\
+ \texttt{0x04} & \texttt{0x201088c44281c040}\\
+ \texttt{0x05} & \texttt{0xa050a8d44a85c241}\\
+ \texttt{0x07} & \texttt{0xe070b85cce8743c1}\\
+ \texttt{0x09} & \texttt{0x90c8e472a9c46221}\\
+ \texttt{0x0b} & \texttt{0xd0e8f4fa2dc6e3a1}\\
+ \texttt{0x0d} & \texttt{0xb0d86cb6eb45a261}\\
+ \texttt{0x0e} & \texttt{0x70b85c2e674321e0}\\
+\hline \end{tabular}
+\label{table:mulconstants}
+\caption{Matrices for multiplications by constants less than 16 in
+AES~GF($2^8$).  Note the matrix for the multiplication by 0 and the identity
+matrix for the multiplication by 1.} \end{table}
+
+Table~\ref{table:mulconstants} provides an examples of matrices for
+multiplication by constants less than 16 over the AES~GF($2^8$), whose
+irreducible polynomial is \texttt{0x11b}. Those matrices may be directly passed
+to the \texttt{sbmm8} instruction, but the data requires preparation. Bits from
+all bytes need to be reorganized, so all bits 0 appear in one byte of the data
+and so on.  This operation is easily performed using matrix transposition.
+Of course, the transposition needs to be reversed afterward.
+
+On the \KalrayK core, this operation may be performed using two instructions
+(assuming that the input value comes in the \texttt{\$r0} register,
+output is available in the same register):
+
+\begin{lstlisting}
+    sbmmt8 $r1 = $r0, 0x8040201008040201
+    ;;
+    sbmmt8 $r0 = $r1, 0x4020108884028180
+    ;;
+\end{lstlisting}
+
+The first instruction provides only transposition (the multiplication is
+performed by the identity matrix). The second instruction multiplies by 2 over
+AES~GF($2^8$) and performs the output transposition using one instruction only.
+
+The possible uses of this method include AES (Advanced Encryption Standard)
+algorithm, which uses multiplications by \texttt{0x02} and \texttt{0x03} for in
+\textsf{MixColumns}, and multiplications by \texttt{0x9}, \texttt{0x0b},
+\texttt{0x0d}, \texttt{0x0e} in \textsf{InvMixColumns}. Another example is the
+SHA-3 hash candidate function, Groestl, which performs multiplications by
+\texttt{0x02}, \texttt{0x03}, \texttt{0x04}, \texttt{0x05} and \texttt{0x07}.
+%Appendix~\ref{appendix:generator} provides the source code to generate all
+%multiplication matrices for multiplication in AES~GF($2^8$).
+
+\subsubsection{Basis Change in GF(\texorpdfstring{$2^8$}{2**8})}
+
+Bit matrix multiplication may be also used for basis changes in GF($2^8$).
+Changes of basis may lead to easier computations, for instance of the inverse in
+GF($2^8$) as shown by Canright~\cite{Canright:2005:NPS}. On the \KalrayK
+core, we can change the basis of eight elements in GF($2^8$) using a single
+\texttt{sbmm8} instruction.
+
+\subsubsection{Conversions for Bit Slicing}\label{sec:bit-slice}
+
+Bit-slicing is a technique that exploits parallelism available at the bit level
+when operating words with logical operations. Once a function is decomposed to
+logic equations, it is possible to compute $w$ instances of it in parallel on a
+core whose word size is $w$ bits.  This techniques was first applied by Biham
+for the DES \cite{Biham:1997:FSE}. Given the $w$
+independent instances of the input data, a bit-sliced implementation requires
+that all bits from the same positions be packed together. This reordering of
+bits may be performed using the bit matrix transpose operation.
+
+The \KalrayK core, efficient reordering of bits is achieved when eight bytes are
+processed by a single \texttt{sbmmt8} instruction. Then the results of multiple
+such operations may be combined whenever the $w$ values of interest are multiple
+of 8.  For instance, if we want to prepare 16 bytes to bit-sliced operations
+(16-bit bit-slicing), we can first perform transposition of the original values
+and then join the pairs of two 8-bit values into 16-bit ones.
+
+FIXME! This is for k1b.
+Let us assume that we have the input in registers \texttt{\$r0, \$r1, \$r2} and
+\texttt{\$r3}. In the first step we transpose them in pairs:
+
+\begin{lstlisting}
+    sbmmt8 $r2:$r4 = $r2:$r3, 0x10204080:0x01020408
+    ;;
+    sbmmt8 $r3:$r0 = $r0:$r1, 0x10204080:0x01020408
+\end{lstlisting}
+
+In the second step we join results from the two pairs using the matrix
+\texttt{0x8008400420021001}:
+
+\begin{lstlisting}
+    sbmm8 $r3:$r2 = $r2:$r3, 0x20021001:0x80084004
+    ;;
+    sbmm8 $r1:$r0 = $r4:$r0, 0x20021001:0x80084004
+\end{lstlisting}
+
+
+

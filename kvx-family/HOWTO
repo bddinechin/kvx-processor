@@ -1,0 +1,4 @@
+mkdir -p build && cd build
+../configure --target=kvx --with-mds=../../../mds/MDS
+make -C ../../../architecture/kvx-family/FE/YAML/kvx/ all && make all
+make refs
